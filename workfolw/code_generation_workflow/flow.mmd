@@ -1,0 +1,25 @@
+flowchart TD
+    A[用户上传论文] --> B[解析为 DocumentElement]
+    B --> C[生成语义 chunks]
+    C --> D[保存 chunks 到 SQLite]
+    D --> E[LLM 总结与多 agent 评审]
+    E --> F[代码需求提取]
+    D --> F
+    F --> G[生成 code_spec]
+    G --> H[确定文件清单与技术栈]
+    H --> I[逐文件生成代码]
+    I --> J[生成 requirements.txt]
+    I --> K[生成 Dockerfile]
+    I --> L[生成 README.md]
+    I --> M[生成 main.py 与 src 模块]
+    J --> N[静态检查]
+    K --> N
+    L --> N
+    M --> N
+    N --> O{检查是否通过}
+    O -->|通过| P[打包 zip]
+    O -->|失败| Q[记录错误]
+    Q --> R[后续：错误回传给 LLM 修复]
+    R --> I
+    P --> S[前端下载代码包]
+

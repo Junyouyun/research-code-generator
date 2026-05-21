@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+pydantic
+python-multipart
+PyMuPDF
+python-docx
+python-dotenv
+openai
+langgraph
+qdrant-client
