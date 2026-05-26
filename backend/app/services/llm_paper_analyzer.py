@@ -350,7 +350,13 @@ def build_final_summary(analysis: dict, section_summaries: list[dict], agent_dia
     }
 
 
-def answer_question_with_chunks(question: str, chunks: list[dict]) -> dict:
+def answer_question_with_chunks(
+    question: str,
+    chunks: list[dict],
+    conversation_context: list[dict] | None = None,
+    project_memory_context: list[dict] | None = None,
+    user_memory_context: list[dict] | None = None,
+) -> dict:
     compact_chunks = [
         {
             "chunk_id": chunk.get("chunk_id", ""),
@@ -359,6 +365,9 @@ def answer_question_with_chunks(question: str, chunks: list[dict]) -> dict:
         }
         for chunk in chunks
     ]
+    compact_conversation = _compact_conversation_context(conversation_context or [])
+    compact_project_memory = _compact_project_memory_context(project_memory_context or [])
+    compact_user_memory = _compact_user_memory_context(user_memory_context or [])
     messages = [
         {
             "role": "system",
@@ -375,6 +384,9 @@ def answer_question_with_chunks(question: str, chunks: list[dict]) -> dict:
                 "JSON 字段必须包含：answer, used_chunks, confidence。\n"
                 "used_chunks 是用到的 chunk_id 数组。\n"
                 "confidence 只能是 low、medium、high。\n\n"
+                f"conversation_context:\n{json.dumps(compact_conversation, ensure_ascii=False)}\n\n"
+                f"project_memory_context:\n{json.dumps(compact_project_memory, ensure_ascii=False)}\n\n"
+                f"user_memory_context:\n{json.dumps(compact_user_memory, ensure_ascii=False)}\n\n"
                 f"question: {question}\n\n"
                 f"chunks:\n{json.dumps(compact_chunks, ensure_ascii=False)}"
             ),
@@ -394,6 +406,9 @@ def answer_question_with_expanded_context(
     question: str,
     current_chunks: list[dict],
     related_papers: list[dict],
+    conversation_context: list[dict] | None = None,
+    project_memory_context: list[dict] | None = None,
+    user_memory_context: list[dict] | None = None,
 ) -> dict:
     current_context = [
         {
@@ -421,6 +436,9 @@ def answer_question_with_expanded_context(
         }
         for paper in related_papers
     ]
+    compact_conversation = _compact_conversation_context(conversation_context or [])
+    compact_project_memory = _compact_project_memory_context(project_memory_context or [])
+    compact_user_memory = _compact_user_memory_context(user_memory_context or [])
     messages = [
         {
             "role": "system",
@@ -439,6 +457,9 @@ def answer_question_with_expanded_context(
                 "JSON 字段必须包含：answer, used_current_chunks, used_related_chunks, confidence。\n"
                 "used_current_chunks 和 used_related_chunks 都是 chunk_id 数组。\n"
                 "confidence 只能是 low、medium、high。\n\n"
+                f"conversation_context:\n{json.dumps(compact_conversation, ensure_ascii=False)}\n\n"
+                f"project_memory_context:\n{json.dumps(compact_project_memory, ensure_ascii=False)}\n\n"
+                f"user_memory_context:\n{json.dumps(compact_user_memory, ensure_ascii=False)}\n\n"
                 f"question: {question}\n\n"
                 f"current_paper_chunks:\n{json.dumps(current_context, ensure_ascii=False)}\n\n"
                 f"related_papers:\n{json.dumps(related_context, ensure_ascii=False)}"
@@ -457,6 +478,57 @@ def answer_question_with_expanded_context(
         "used_related_chunks": used_related_chunks,
         "confidence": confidence if confidence in {"low", "medium", "high"} else "low",
     }
+
+
+def _compact_conversation_context(messages: list[dict]) -> list[dict]:
+    compact_messages = []
+    for message in messages[-12:]:
+        role = _as_text(message.get("role"))
+        content = _as_text(message.get("content"))
+        if role not in {"user", "assistant"} or not content:
+            continue
+        compact_messages.append(
+            {
+                "role": role,
+                "content": content[:1200],
+            }
+        )
+    return compact_messages
+
+
+def _compact_project_memory_context(memories: list[dict]) -> list[dict]:
+    compact_memories = []
+    for memory in memories[:12]:
+        content = _as_text(memory.get("content"))
+        if not content:
+            continue
+        compact_memories.append(
+            {
+                "memory_type": _as_text(memory.get("memory_type")),
+                "content": content[:1200],
+                "importance": memory.get("importance"),
+                "confidence": memory.get("confidence"),
+            }
+        )
+    return compact_memories
+
+
+def _compact_user_memory_context(memories: list[dict]) -> list[dict]:
+    compact_memories = []
+    for memory in memories[:8]:
+        content = _as_text(memory.get("content"))
+        if not content:
+            continue
+        compact_memories.append(
+            {
+                "memory_type": _as_text(memory.get("memory_type")),
+                "content": content[:800],
+                "importance": memory.get("importance"),
+                "confidence": memory.get("confidence"),
+                "score": memory.get("score"),
+            }
+        )
+    return compact_memories
 
 
 def _summarize_section_units(

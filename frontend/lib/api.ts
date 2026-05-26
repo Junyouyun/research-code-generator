@@ -75,9 +75,93 @@ export type CodeFilesResult = {
 
 export type QuestionResult = {
   project_id: string;
+  conversation_id?: string | null;
   answer: string;
   used_chunks: string[];
   confidence: string;
+  expanded?: boolean;
+  used_related_chunks?: string[];
+  retrieval_trace?: Record<string, unknown> | null;
+};
+
+export type Conversation = {
+  conversation_id: string;
+  user_id: string;
+  project_id?: string | null;
+  title?: string | null;
+  status: string;
+  short_summary?: string | null;
+  summary_updated_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ConversationMessage = {
+  message_id: string;
+  conversation_id: string;
+  project_id?: string | null;
+  role: "user" | "assistant" | string;
+  content: string;
+  content_type: string;
+  metadata?: {
+    confidence?: string;
+    used_chunks?: string[];
+    expanded?: boolean;
+    used_related_chunks?: string[];
+  } | null;
+  created_at?: string | null;
+};
+
+export type ConversationMessagesResult = {
+  conversation_id: string;
+  messages: ConversationMessage[];
+};
+
+export type ProjectMemory = {
+  memory_id: string;
+  project_id: string;
+  memory_type: string;
+  content: string;
+  normalized_key?: string | null;
+  importance: number;
+  confidence: number;
+  status: string;
+  source_type: string;
+  source_id?: string | null;
+  evidence?: Record<string, unknown> | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ProjectMemoriesResult = {
+  project_id: string;
+  memories: ProjectMemory[];
+};
+
+export type UserMemory = {
+  memory_id: string;
+  memory_type: string;
+  content: string;
+  normalized_key?: string | null;
+  importance: number;
+  confidence: number;
+  status: string;
+  source_type: string;
+  source_id?: string | null;
+  evidence?: Record<string, unknown> | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type UserMemoriesResult = {
+  memories: UserMemory[];
+};
+
+export type UpdateUserMemoryPayload = {
+  content?: string;
+  memory_type?: string;
+  importance?: number;
+  confidence?: number;
 };
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -171,13 +255,49 @@ export async function getCodeFiles(projectId: string): Promise<CodeFilesResult> 
   return requestJson<CodeFilesResult>(`${API_BASE_URL}/projects/${projectId}/code`);
 }
 
-export async function askProjectQuestion(projectId: string, question: string): Promise<QuestionResult> {
+export async function getProjectConversation(projectId: string): Promise<Conversation> {
+  return requestJson<Conversation>(`${API_BASE_URL}/projects/${projectId}/conversation`);
+}
+
+export async function getConversationMessages(conversationId: string): Promise<ConversationMessagesResult> {
+  return requestJson<ConversationMessagesResult>(`${API_BASE_URL}/conversations/${conversationId}/messages`);
+}
+
+export async function getProjectMemories(projectId: string): Promise<ProjectMemoriesResult> {
+  return requestJson<ProjectMemoriesResult>(`${API_BASE_URL}/projects/${projectId}/memories`);
+}
+
+export async function getUserMemories(memoryType?: string): Promise<UserMemoriesResult> {
+  const params = memoryType ? `?memory_type=${encodeURIComponent(memoryType)}` : "";
+  return requestJson<UserMemoriesResult>(`${API_BASE_URL}/memories${params}`);
+}
+
+export async function updateUserMemory(
+  memoryId: string,
+  payload: UpdateUserMemoryPayload,
+): Promise<UserMemory> {
+  return requestJson<UserMemory>(`${API_BASE_URL}/memories/${memoryId}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteUserMemory(memoryId: string): Promise<UserMemory> {
+  return requestJson<UserMemory>(`${API_BASE_URL}/memories/${memoryId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function askProjectQuestion(projectId: string, question: string, conversationId?: string): Promise<QuestionResult> {
   return requestJson<QuestionResult>(`${API_BASE_URL}/projects/${projectId}/qa`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ question }),
+    body: JSON.stringify({ question, conversation_id: conversationId || null }),
   });
 }
 

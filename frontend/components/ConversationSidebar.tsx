@@ -120,6 +120,12 @@ export function ConversationSidebar({ currentProjectId, user, onLogout }: Conver
         新建分析
       </button>
 
+      {user ? (
+        <button className="memory-nav-button" type="button" onClick={() => router.push("/settings/memory")}>
+          Memory
+        </button>
+      ) : null}
+
       <div className="sidebar-section-title">最近项目</div>
 
       <div className="conversation-list">

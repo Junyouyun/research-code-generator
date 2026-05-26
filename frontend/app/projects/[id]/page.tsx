@@ -15,10 +15,13 @@ import { ensureProjectConversation, readConversations } from "../../../component
 import {
   askProjectQuestion,
   CodeFile,
+  ConversationMessage,
+  getConversationMessages,
   getArtifactUrl,
   getCodeFiles,
   getMe,
   getProject,
+  getProjectConversation,
   getReport,
   ProjectStatus as ProjectStatusData,
   QuestionResult,
@@ -51,6 +54,7 @@ export default function ProjectPage() {
   const [activePath, setActivePath] = useState("");
   const [codeError, setCodeError] = useState("");
   const [qaMessages, setQaMessages] = useState<QaMessage[]>([]);
+  const [conversationId, setConversationId] = useState("");
   const [paperTitle, setPaperTitle] = useState("已上传的论文");
   const [artifactOpen, setArtifactOpen] = useState(false);
   const [artifactCollapsed, setArtifactCollapsed] = useState(false);
@@ -91,6 +95,41 @@ export default function ProjectPage() {
     if (conversation?.title) {
       setPaperTitle(conversation.title);
     }
+  }, [projectId, user]);
+
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    let active = true;
+
+    async function loadConversation() {
+      const conversation = await getProjectConversation(projectId);
+      if (!active) {
+        return;
+      }
+
+      setConversationId(conversation.conversation_id);
+      if (conversation.title) {
+        setPaperTitle(conversation.title);
+      }
+
+      const messageResult = await getConversationMessages(conversation.conversation_id);
+      if (active) {
+        setQaMessages(messagesToQaMessages(projectId, conversation.conversation_id, messageResult.messages));
+      }
+    }
+
+    loadConversation().catch((error) => {
+      if (active) {
+        setProjectError(error instanceof Error ? error.message : "读取对话记录失败。");
+      }
+    });
+
+    return () => {
+      active = false;
+    };
   }, [projectId, user]);
 
   useEffect(() => {
@@ -247,7 +286,10 @@ export default function ProjectPage() {
 
     const id = `${Date.now()}`;
     setQaMessages((current) => [...current, { id, question, result: null }]);
-    const result = await askProjectQuestion(projectId, question);
+    const result = await askProjectQuestion(projectId, question, conversationId || undefined);
+    if (result.conversation_id) {
+      setConversationId(result.conversation_id);
+    }
     setQaMessages((current) => current.map((item) => (item.id === id ? { ...item, result } : item)));
   }
 
@@ -340,4 +382,51 @@ export default function ProjectPage() {
       />
     </main>
   );
+}
+
+
+function messagesToQaMessages(
+  projectId: string,
+  conversationId: string,
+  messages: ConversationMessage[],
+): QaMessage[] {
+  const qaMessages: QaMessage[] = [];
+
+  for (const message of messages) {
+    if (message.role === "user") {
+      qaMessages.push({
+        id: message.message_id,
+        question: message.content,
+        result: null,
+      });
+      continue;
+    }
+
+    if (message.role !== "assistant") {
+      continue;
+    }
+
+    const result: QuestionResult = {
+      project_id: projectId,
+      conversation_id: conversationId,
+      answer: message.content,
+      used_chunks: message.metadata?.used_chunks ?? [],
+      confidence: message.metadata?.confidence ?? "low",
+      expanded: message.metadata?.expanded ?? false,
+      used_related_chunks: message.metadata?.used_related_chunks ?? [],
+    };
+
+    const lastMessage = qaMessages.at(-1);
+    if (lastMessage && !lastMessage.result) {
+      lastMessage.result = result;
+    } else {
+      qaMessages.push({
+        id: message.message_id,
+        question: "",
+        result,
+      });
+    }
+  }
+
+  return qaMessages;
 }

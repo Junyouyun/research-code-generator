@@ -79,15 +79,18 @@ class CodeFilesResponse(BaseModel):
 
 class QuestionRequest(BaseModel):
     question: str
+    conversation_id: str | None = None
 
 
 class QuestionResponse(BaseModel):
     project_id: str
+    conversation_id: str | None = None
     answer: str
     used_chunks: list[str]
     confidence: str
     expanded: bool = False
     used_related_chunks: list[str] = Field(default_factory=list)
+    retrieval_trace: dict | None = None
 
 
 class RelatedPapersRequest(BaseModel):
@@ -132,3 +135,78 @@ class ReindexResponse(BaseModel):
     indexed: int
     collection: str
     embedding_model: str | None = None
+
+
+class ConversationResponse(BaseModel):
+    conversation_id: str
+    user_id: str
+    project_id: str | None = None
+    title: str | None = None
+    status: str
+    short_summary: str | None = None
+    summary_updated_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ConversationMessageResponse(BaseModel):
+    message_id: str
+    conversation_id: str
+    project_id: str | None = None
+    role: str
+    content: str
+    content_type: str = "text"
+    metadata: dict | None = None
+    created_at: str | None = None
+
+
+class ConversationMessagesResponse(BaseModel):
+    conversation_id: str
+    messages: list[ConversationMessageResponse] = Field(default_factory=list)
+
+
+class ProjectMemoryResponse(BaseModel):
+    memory_id: str
+    project_id: str
+    memory_type: str
+    content: str
+    normalized_key: str | None = None
+    importance: float
+    confidence: float
+    status: str
+    source_type: str
+    source_id: str | None = None
+    evidence: dict | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProjectMemoriesResponse(BaseModel):
+    project_id: str
+    memories: list[ProjectMemoryResponse] = Field(default_factory=list)
+
+
+class UserMemoryResponse(BaseModel):
+    memory_id: str
+    memory_type: str
+    content: str
+    normalized_key: str | None = None
+    importance: float
+    confidence: float
+    status: str
+    source_type: str
+    source_id: str | None = None
+    evidence: dict | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class UserMemoriesResponse(BaseModel):
+    memories: list[UserMemoryResponse] = Field(default_factory=list)
+
+
+class UpdateUserMemoryRequest(BaseModel):
+    content: str | None = None
+    memory_type: str | None = None
+    importance: float | None = Field(default=None, ge=0, le=1)
+    confidence: float | None = Field(default=None, ge=0, le=1)

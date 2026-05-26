@@ -1,7 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import get_current_user
-from app.core.database import list_document_chunks_by_ids
+from app.core.database import (
+    add_project_event,
+    get_conversation,
+    get_or_create_project_conversation,
+    save_conversation_message,
+)
 from app.core.models import User
 from app.core.project_access import get_owned_project
 from app.core.schemas import (
@@ -14,7 +19,8 @@ from app.services.llm_paper_analyzer import (
     answer_question_with_chunks,
     answer_question_with_expanded_context,
 )
-from app.services.query_intent import should_expand_to_related_papers
+from app.services.context_orchestrator import ContextBuildError, build_qa_context
+from app.services.user_memory import extract_user_memories_from_turn
 
 router = APIRouter(tags=["qa"])
 
@@ -33,44 +39,89 @@ def ask_project_question(
     if not project.paper_version_id:
         raise HTTPException(status_code=409, detail="project has no paper_version_id")
 
-    expanded = should_expand_to_related_papers(question)
-
-    from app.services.vector_store import search_related_papers, search_within_paper
-
-    hits = search_within_paper(
-        paper_version_id=project.paper_version_id,
-        query=question,
-        top_k=6 if expanded else 8,
+    conversation = _resolve_project_conversation(
+        project_id=project_id,
         user_id=current_user.user_id,
+        conversation_id=request.conversation_id,
+        title=project.original_filename,
     )
-    chunk_ids = [hit["chunk_id"] for hit in hits if hit.get("chunk_id")]
-    chunks = list_document_chunks_by_ids(project_id, chunk_ids)
-    if not chunks:
-        raise HTTPException(status_code=404, detail="relevant document chunks not found")
-
-    related_papers = []
-    if expanded:
-        if not project.paper_id:
-            raise HTTPException(status_code=409, detail="project has no paper_id")
-        related_papers = search_related_papers(
-            source_paper_id=project.paper_id,
-            query=question,
-            top_papers=5,
-            chunks_per_paper=3,
+    save_conversation_message(
+        conversation_id=conversation.conversation_id,
+        user_id=current_user.user_id,
+        project_id=project_id,
+        role="user",
+        content=question,
+    )
+    try:
+        qa_context = build_qa_context(
+            project=project,
             user_id=current_user.user_id,
+            conversation_id=conversation.conversation_id,
+            question=question,
         )
-        related_papers = _attach_related_chunk_content(related_papers)
-        result = answer_question_with_expanded_context(question, chunks, related_papers)
+    except ContextBuildError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    conversation_context = qa_context["conversation_context"]
+    project_memory_context = qa_context["project_memory_context"]
+    user_memory_context = qa_context["user_memory_context"]
+    chunks = qa_context["current_paper_chunks"]
+    related_papers = qa_context["related_papers"]
+    retrieval_trace = qa_context["retrieval_trace"]
+    expanded = bool(retrieval_trace["expanded"])
+
+    if expanded:
+        result = answer_question_with_expanded_context(
+            question,
+            chunks,
+            related_papers,
+            conversation_context=conversation_context,
+            project_memory_context=project_memory_context,
+            user_memory_context=user_memory_context,
+        )
     else:
-        result = answer_question_with_chunks(question, chunks)
+        result = answer_question_with_chunks(
+            question,
+            chunks,
+            conversation_context=conversation_context,
+            project_memory_context=project_memory_context,
+            user_memory_context=user_memory_context,
+        )
+
+    save_conversation_message(
+        conversation_id=conversation.conversation_id,
+        user_id=current_user.user_id,
+        project_id=project_id,
+        role="assistant",
+        content=result["answer"],
+        metadata={
+            "confidence": result["confidence"],
+            "used_chunks": result["used_chunks"],
+            "expanded": expanded,
+            "used_related_chunks": result.get("used_related_chunks", []),
+            "retrieval_trace": retrieval_trace,
+            "used_user_memories": [
+                memory.get("memory_id") for memory in user_memory_context if memory.get("memory_id")
+            ],
+        },
+    )
+    _extract_user_memory_safely(
+        user_id=current_user.user_id,
+        project_id=project_id,
+        conversation_id=conversation.conversation_id,
+        question=question,
+        answer=result["answer"],
+    )
 
     return QuestionResponse(
         project_id=project_id,
+        conversation_id=conversation.conversation_id,
         answer=result["answer"],
         used_chunks=result["used_chunks"],
         confidence=result["confidence"],
         expanded=expanded,
         used_related_chunks=result.get("used_related_chunks", []),
+        retrieval_trace=retrieval_trace,
     )
 
 
@@ -104,35 +155,49 @@ def search_project_related_papers(
     )
 
 
-def _attach_related_chunk_content(related_papers: list[dict]) -> list[dict]:
-    chunks_by_project: dict[str, list[str]] = {}
-    for paper in related_papers:
-        for chunk in paper.get("chunks", []):
-            project_id = chunk.get("project_id")
-            chunk_id = chunk.get("chunk_id")
-            if project_id and chunk_id:
-                chunks_by_project.setdefault(project_id, []).append(chunk_id)
+def _resolve_project_conversation(
+    project_id: str,
+    user_id: str,
+    conversation_id: str | None,
+    title: str | None = None,
+):
+    if not conversation_id:
+        return get_or_create_project_conversation(project_id, user_id, title=title)
 
-    content_by_chunk_id = {}
-    for related_project_id, chunk_ids in chunks_by_project.items():
-        for chunk in list_document_chunks_by_ids(related_project_id, chunk_ids):
-            content_by_chunk_id[chunk["chunk_id"]] = chunk
+    conversation = get_conversation(conversation_id, user_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    if conversation.project_id != project_id:
+        raise HTTPException(status_code=403, detail="conversation does not belong to project")
+    return conversation
 
-    enriched_papers = []
-    for paper in related_papers:
-        enriched_chunks = []
-        for chunk in paper.get("chunks", []):
-            full_chunk = content_by_chunk_id.get(chunk.get("chunk_id"))
-            if full_chunk:
-                enriched_chunks.append(
-                    {
-                        **chunk,
-                        "content": full_chunk.get("content", ""),
-                        "title": full_chunk.get("title", ""),
-                    }
-                )
-            else:
-                enriched_chunks.append(chunk)
-        enriched_papers.append({**paper, "chunks": enriched_chunks})
 
-    return enriched_papers
+def _extract_user_memory_safely(
+    user_id: str,
+    project_id: str,
+    conversation_id: str,
+    question: str,
+    answer: str,
+) -> None:
+    try:
+        memories = extract_user_memories_from_turn(
+            user_id=user_id,
+            user_message=question,
+            assistant_message=answer,
+            project_id=project_id,
+            conversation_id=conversation_id,
+        )
+        if memories:
+            add_project_event(
+                project_id,
+                "user_memory",
+                f"更新 {len(memories)} 条用户长期记忆",
+                details={"memory_ids": [memory.memory_id for memory in memories]},
+            )
+    except Exception as exc:
+        add_project_event(
+            project_id,
+            "user_memory",
+            f"用户长期记忆抽取失败：{exc}",
+            level="warning",
+        )

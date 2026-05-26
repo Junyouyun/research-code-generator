@@ -8,7 +8,15 @@ from typing import Iterator
 from uuid import uuid4
 
 from app.config import DATABASE_PATH
-from app.core.models import Project, ProjectEvent, ProjectStatus, User
+from app.core.models import (
+    Conversation,
+    ConversationMessage,
+    MemoryItem,
+    Project,
+    ProjectEvent,
+    ProjectStatus,
+    User,
+)
 
 DEFAULT_USER_ID = "local"
 
@@ -34,6 +42,64 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     token_hash TEXT NOT NULL UNIQUE,
     expires_at TEXT NOT NULL,
     created_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users (user_id)
+)
+"""
+
+
+CONVERSATIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT,
+    title TEXT,
+    status TEXT NOT NULL DEFAULT 'active',
+    short_summary TEXT,
+    summary_updated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users (user_id),
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+)
+"""
+
+
+CONVERSATION_MESSAGES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    message_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    project_id TEXT,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    content_type TEXT NOT NULL DEFAULT 'text',
+    metadata TEXT,
+    token_count INTEGER,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (conversation_id) REFERENCES conversations (conversation_id),
+    FOREIGN KEY (user_id) REFERENCES users (user_id),
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+)
+"""
+
+
+MEMORY_ITEMS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS memory_items (
+    memory_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    scope_id TEXT,
+    memory_type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    normalized_key TEXT,
+    importance REAL NOT NULL DEFAULT 0.5,
+    confidence REAL NOT NULL DEFAULT 0.7,
+    status TEXT NOT NULL DEFAULT 'active',
+    source_type TEXT NOT NULL,
+    source_id TEXT,
+    evidence TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users (user_id)
 )
 """
@@ -179,6 +245,9 @@ def init_database() -> None:
         connection.execute(USERS_TABLE_SQL)
         connection.execute(USER_SESSIONS_TABLE_SQL)
         connection.execute(PROJECTS_TABLE_SQL)
+        connection.execute(CONVERSATIONS_TABLE_SQL)
+        connection.execute(CONVERSATION_MESSAGES_TABLE_SQL)
+        connection.execute(MEMORY_ITEMS_TABLE_SQL)
         connection.execute(PAPERS_TABLE_SQL)
         connection.execute(PAPER_VERSIONS_TABLE_SQL)
         connection.execute(CHUNKS_TABLE_SQL)
@@ -314,6 +383,619 @@ def delete_user_session(token_hash: str) -> None:
             "DELETE FROM user_sessions WHERE token_hash = ?",
             (token_hash,),
         )
+
+
+def get_or_create_project_conversation(
+    project_id: str,
+    user_id: str,
+    title: str | None = None,
+) -> Conversation:
+    init_database()
+    now = _now()
+
+    with _connect() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM conversations
+            WHERE project_id = ?
+              AND user_id = ?
+              AND status = 'active'
+            ORDER BY created_at ASC
+            LIMIT 1
+            """,
+            (project_id, user_id),
+        ).fetchone()
+        if row is not None:
+            return _row_to_conversation(row)
+
+        conversation_id = uuid4().hex
+        connection.execute(
+            """
+            INSERT INTO conversations (
+                conversation_id,
+                user_id,
+                project_id,
+                title,
+                status,
+                short_summary,
+                summary_updated_at,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                conversation_id,
+                user_id,
+                project_id,
+                title,
+                "active",
+                None,
+                None,
+                now,
+                now,
+            ),
+        )
+
+        return Conversation(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            project_id=project_id,
+            title=title,
+            status="active",
+            created_at=now,
+            updated_at=now,
+        )
+
+
+def get_conversation(conversation_id: str, user_id: str) -> Conversation | None:
+    init_database()
+    with _connect() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM conversations
+            WHERE conversation_id = ?
+              AND user_id = ?
+            """,
+            (conversation_id, user_id),
+        ).fetchone()
+
+    return _row_to_conversation(row) if row is not None else None
+
+
+def list_conversation_messages(
+    conversation_id: str,
+    user_id: str,
+    limit: int = 200,
+) -> list[ConversationMessage]:
+    init_database()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM conversation_messages
+            WHERE conversation_id = ?
+              AND user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (conversation_id, user_id, limit),
+        ).fetchall()
+
+    return [_row_to_conversation_message(row) for row in reversed(rows)]
+
+
+def list_recent_conversation_messages(
+    conversation_id: str,
+    user_id: str,
+    limit: int = 12,
+) -> list[ConversationMessage]:
+    init_database()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM conversation_messages
+            WHERE conversation_id = ?
+              AND user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (conversation_id, user_id, limit),
+        ).fetchall()
+
+    return [_row_to_conversation_message(row) for row in reversed(rows)]
+
+
+def save_conversation_message(
+    conversation_id: str,
+    user_id: str,
+    project_id: str | None,
+    role: str,
+    content: str,
+    content_type: str = "text",
+    metadata: dict | None = None,
+) -> ConversationMessage:
+    init_database()
+    now = _now()
+    message = ConversationMessage(
+        message_id=uuid4().hex,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        project_id=project_id,
+        role=role,
+        content=content,
+        content_type=content_type,
+        metadata=metadata,
+        token_count=_estimate_token_count(content),
+        created_at=now,
+    )
+
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO conversation_messages (
+                message_id,
+                conversation_id,
+                user_id,
+                project_id,
+                role,
+                content,
+                content_type,
+                metadata,
+                token_count,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                message.message_id,
+                message.conversation_id,
+                message.user_id,
+                message.project_id,
+                message.role,
+                message.content,
+                message.content_type,
+                json.dumps(message.metadata, ensure_ascii=False) if message.metadata else None,
+                message.token_count,
+                message.created_at,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE conversations
+            SET updated_at = ?
+            WHERE conversation_id = ?
+              AND user_id = ?
+            """,
+            (now, conversation_id, user_id),
+        )
+
+    return message
+
+
+def update_conversation_summary(
+    conversation_id: str,
+    user_id: str,
+    short_summary: str,
+) -> None:
+    init_database()
+    now = _now()
+    with _connect() as connection:
+        connection.execute(
+            """
+            UPDATE conversations
+            SET short_summary = ?,
+                summary_updated_at = ?,
+                updated_at = ?
+            WHERE conversation_id = ?
+              AND user_id = ?
+            """,
+            (short_summary, now, now, conversation_id, user_id),
+        )
+
+
+def upsert_project_memory(
+    project_id: str,
+    user_id: str,
+    memory_type: str,
+    content: str,
+    normalized_key: str | None = None,
+    importance: float = 0.5,
+    confidence: float = 0.7,
+    source_type: str = "system",
+    source_id: str | None = None,
+    evidence: dict | None = None,
+) -> MemoryItem:
+    init_database()
+    now = _now()
+    clean_key = normalized_key.strip().lower() if normalized_key else None
+
+    with _connect() as connection:
+        existing = None
+        if clean_key:
+            existing = connection.execute(
+                """
+                SELECT *
+                FROM memory_items
+                WHERE user_id = ?
+                  AND scope = 'project'
+                  AND scope_id = ?
+                  AND memory_type = ?
+                  AND normalized_key = ?
+                LIMIT 1
+                """,
+                (user_id, project_id, memory_type, clean_key),
+            ).fetchone()
+
+        if existing is not None:
+            connection.execute(
+                """
+                UPDATE memory_items
+                SET content = ?,
+                    importance = ?,
+                    confidence = ?,
+                    status = 'active',
+                    source_type = ?,
+                    source_id = ?,
+                    evidence = ?,
+                    updated_at = ?
+                WHERE memory_id = ?
+                """,
+                (
+                    content,
+                    importance,
+                    confidence,
+                    source_type,
+                    source_id,
+                    json.dumps(evidence, ensure_ascii=False) if evidence else None,
+                    now,
+                    existing["memory_id"],
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM memory_items WHERE memory_id = ?",
+                (existing["memory_id"],),
+            ).fetchone()
+            return _row_to_memory_item(row)
+
+        memory_id = uuid4().hex
+        connection.execute(
+            """
+            INSERT INTO memory_items (
+                memory_id,
+                user_id,
+                scope,
+                scope_id,
+                memory_type,
+                content,
+                normalized_key,
+                importance,
+                confidence,
+                status,
+                source_type,
+                source_id,
+                evidence,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                memory_id,
+                user_id,
+                "project",
+                project_id,
+                memory_type,
+                content,
+                clean_key,
+                importance,
+                confidence,
+                "active",
+                source_type,
+                source_id,
+                json.dumps(evidence, ensure_ascii=False) if evidence else None,
+                now,
+                now,
+            ),
+        )
+
+        return MemoryItem(
+            memory_id=memory_id,
+            user_id=user_id,
+            scope="project",
+            scope_id=project_id,
+            memory_type=memory_type,
+            content=content,
+            normalized_key=clean_key,
+            importance=importance,
+            confidence=confidence,
+            status="active",
+            source_type=source_type,
+            source_id=source_id,
+            evidence=evidence,
+            created_at=now,
+            updated_at=now,
+        )
+
+
+def list_project_memories(
+    project_id: str,
+    user_id: str,
+    status: str = "active",
+    limit: int = 50,
+) -> list[MemoryItem]:
+    init_database()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM memory_items
+            WHERE user_id = ?
+              AND scope = 'project'
+              AND scope_id = ?
+              AND status = ?
+            ORDER BY importance DESC, updated_at DESC
+            LIMIT ?
+            """,
+            (user_id, project_id, status, limit),
+        ).fetchall()
+
+    return [_row_to_memory_item(row) for row in rows]
+
+
+def upsert_user_memory(
+    user_id: str,
+    memory_type: str,
+    content: str,
+    normalized_key: str | None = None,
+    importance: float = 0.5,
+    confidence: float = 0.7,
+    source_type: str = "system",
+    source_id: str | None = None,
+    evidence: dict | None = None,
+) -> MemoryItem:
+    init_database()
+    now = _now()
+    clean_key = normalized_key.strip().lower() if normalized_key else None
+
+    with _connect() as connection:
+        existing = None
+        if clean_key:
+            existing = connection.execute(
+                """
+                SELECT *
+                FROM memory_items
+                WHERE user_id = ?
+                  AND scope = 'user'
+                  AND scope_id IS NULL
+                  AND memory_type = ?
+                  AND normalized_key = ?
+                LIMIT 1
+                """,
+                (user_id, memory_type, clean_key),
+            ).fetchone()
+
+        if existing is not None:
+            connection.execute(
+                """
+                UPDATE memory_items
+                SET content = ?,
+                    importance = ?,
+                    confidence = ?,
+                    status = 'active',
+                    source_type = ?,
+                    source_id = ?,
+                    evidence = ?,
+                    updated_at = ?
+                WHERE memory_id = ?
+                """,
+                (
+                    content,
+                    importance,
+                    confidence,
+                    source_type,
+                    source_id,
+                    json.dumps(evidence, ensure_ascii=False) if evidence else None,
+                    now,
+                    existing["memory_id"],
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM memory_items WHERE memory_id = ?",
+                (existing["memory_id"],),
+            ).fetchone()
+            return _row_to_memory_item(row)
+
+        memory_id = uuid4().hex
+        connection.execute(
+            """
+            INSERT INTO memory_items (
+                memory_id,
+                user_id,
+                scope,
+                scope_id,
+                memory_type,
+                content,
+                normalized_key,
+                importance,
+                confidence,
+                status,
+                source_type,
+                source_id,
+                evidence,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                memory_id,
+                user_id,
+                "user",
+                None,
+                memory_type,
+                content,
+                clean_key,
+                importance,
+                confidence,
+                "active",
+                source_type,
+                source_id,
+                json.dumps(evidence, ensure_ascii=False) if evidence else None,
+                now,
+                now,
+            ),
+        )
+
+        return MemoryItem(
+            memory_id=memory_id,
+            user_id=user_id,
+            scope="user",
+            scope_id=None,
+            memory_type=memory_type,
+            content=content,
+            normalized_key=clean_key,
+            importance=importance,
+            confidence=confidence,
+            status="active",
+            source_type=source_type,
+            source_id=source_id,
+            evidence=evidence,
+            created_at=now,
+            updated_at=now,
+        )
+
+
+def list_user_memories(
+    user_id: str,
+    status: str = "active",
+    limit: int = 50,
+    memory_type: str | None = None,
+) -> list[MemoryItem]:
+    init_database()
+    params: list[object] = [user_id, status]
+    type_filter = ""
+    if memory_type:
+        type_filter = "AND memory_type = ?"
+        params.append(memory_type)
+    params.append(limit)
+
+    with _connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM memory_items
+            WHERE user_id = ?
+              AND scope = 'user'
+              AND scope_id IS NULL
+              AND status = ?
+              {type_filter}
+            ORDER BY importance DESC, updated_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+
+    return [_row_to_memory_item(row) for row in rows]
+
+
+def get_memory_item(memory_id: str, user_id: str) -> MemoryItem | None:
+    init_database()
+    with _connect() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM memory_items
+            WHERE memory_id = ?
+              AND user_id = ?
+            """,
+            (memory_id, user_id),
+        ).fetchone()
+
+    return _row_to_memory_item(row) if row is not None else None
+
+
+def update_memory_item_content(
+    memory_id: str,
+    user_id: str,
+    content: str,
+    memory_type: str | None = None,
+    importance: float | None = None,
+    confidence: float | None = None,
+) -> MemoryItem | None:
+    init_database()
+    existing = get_memory_item(memory_id, user_id)
+    if existing is None or existing.scope != "user":
+        return None
+
+    updated_type = memory_type or existing.memory_type
+    updated_importance = existing.importance if importance is None else importance
+    updated_confidence = existing.confidence if confidence is None else confidence
+    now = _now()
+
+    with _connect() as connection:
+        connection.execute(
+            """
+            UPDATE memory_items
+            SET content = ?,
+                memory_type = ?,
+                importance = ?,
+                confidence = ?,
+                updated_at = ?
+            WHERE memory_id = ?
+              AND user_id = ?
+              AND scope = 'user'
+            """,
+            (
+                content,
+                updated_type,
+                updated_importance,
+                updated_confidence,
+                now,
+                memory_id,
+                user_id,
+            ),
+        )
+        row = connection.execute(
+            "SELECT * FROM memory_items WHERE memory_id = ? AND user_id = ?",
+            (memory_id, user_id),
+        ).fetchone()
+
+    return _row_to_memory_item(row) if row is not None else None
+
+
+def update_memory_item_status(
+    memory_id: str,
+    user_id: str,
+    status: str,
+) -> MemoryItem | None:
+    init_database()
+    existing = get_memory_item(memory_id, user_id)
+    if existing is None or existing.scope != "user":
+        return None
+
+    now = _now()
+    with _connect() as connection:
+        connection.execute(
+            """
+            UPDATE memory_items
+            SET status = ?,
+                updated_at = ?
+            WHERE memory_id = ?
+              AND user_id = ?
+              AND scope = 'user'
+            """,
+            (status, now, memory_id, user_id),
+        )
+        row = connection.execute(
+            "SELECT * FROM memory_items WHERE memory_id = ? AND user_id = ?",
+            (memory_id, user_id),
+        ).fetchone()
+
+    return _row_to_memory_item(row) if row is not None else None
 
 
 def create_chunks_table() -> None:
@@ -902,6 +1584,55 @@ def _row_to_user(row: sqlite3.Row) -> User:
     )
 
 
+def _row_to_conversation(row: sqlite3.Row) -> Conversation:
+    return Conversation(
+        conversation_id=row["conversation_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        title=row["title"],
+        status=row["status"],
+        short_summary=row["short_summary"],
+        summary_updated_at=row["summary_updated_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_conversation_message(row: sqlite3.Row) -> ConversationMessage:
+    return ConversationMessage(
+        message_id=row["message_id"],
+        conversation_id=row["conversation_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        role=row["role"],
+        content=row["content"],
+        content_type=row["content_type"],
+        metadata=_decode_details(row["metadata"]),
+        token_count=row["token_count"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_memory_item(row: sqlite3.Row) -> MemoryItem:
+    return MemoryItem(
+        memory_id=row["memory_id"],
+        user_id=row["user_id"],
+        scope=row["scope"],
+        scope_id=row["scope_id"],
+        memory_type=row["memory_type"],
+        content=row["content"],
+        normalized_key=row["normalized_key"],
+        importance=float(row["importance"]),
+        confidence=float(row["confidence"]),
+        status=row["status"],
+        source_type=row["source_type"],
+        source_id=row["source_id"],
+        evidence=_decode_details(row["evidence"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 def _build_avatar_initial(value: str) -> str:
     stripped = value.strip()
     return stripped[:1].upper() if stripped else "U"
@@ -976,6 +1707,24 @@ def _ensure_indexes(connection: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions (user_id)"
     )
     connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_project_user ON conversations (project_id, user_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation ON conversation_messages (conversation_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversation_messages_user ON conversation_messages (user_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_project ON memory_items (user_id, scope, scope_id, status)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_user ON memory_items (user_id, scope, status)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_items_key ON memory_items (user_id, scope, scope_id, memory_type, normalized_key)"
+    )
+    connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_paper_versions_paper_id ON paper_versions (paper_id)"
     )
     connection.execute(
@@ -1014,3 +1763,10 @@ def _decode_details(value: str | None) -> dict | None:
         return None
 
     return decoded if isinstance(decoded, dict) else None
+
+
+def _estimate_token_count(content: str) -> int:
+    stripped = content.strip()
+    if not stripped:
+        return 0
+    return max(1, len(stripped) // 4)

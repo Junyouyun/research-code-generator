@@ -13,6 +13,52 @@ class User:
     updated_at: str | None = None
 
 
+@dataclass(frozen=True)
+class Conversation:
+    conversation_id: str
+    user_id: str
+    project_id: str | None = None
+    title: str | None = None
+    status: str = "active"
+    short_summary: str | None = None
+    summary_updated_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class ConversationMessage:
+    message_id: str
+    conversation_id: str
+    user_id: str
+    project_id: str | None
+    role: str
+    content: str
+    content_type: str = "text"
+    metadata: dict | None = None
+    token_count: int | None = None
+    created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class MemoryItem:
+    memory_id: str
+    user_id: str
+    scope: str
+    scope_id: str | None
+    memory_type: str
+    content: str
+    normalized_key: str | None = None
+    importance: float = 0.5
+    confidence: float = 0.7
+    status: str = "active"
+    source_type: str = "system"
+    source_id: str | None = None
+    evidence: dict | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class ProjectStatus(StrEnum):
     UPLOADED = "uploaded"
     PARSING = "parsing"

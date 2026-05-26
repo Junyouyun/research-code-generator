@@ -20,6 +20,12 @@ from app.services.document_chunker import chunk_document_elements
 from app.services.document_loader import elements_to_parsed_paper, load_document_elements
 from app.services.experiment_spec_builder import build_experiment_spec
 from app.services.llm_paper_analyzer import analyze_paper_with_llm
+from app.services.project_memory import (
+    record_analysis_memory,
+    record_code_plan_memory,
+    record_experiment_spec_memory,
+    record_validation_memory,
+)
 from app.services.report_generator import generate_report
 
 
@@ -146,6 +152,11 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
                 progress_callback=lambda message: _add_llm_progress_event(project_id, message),
             )
             _write_json(parsed_dir / "analysis.json", analysis)
+            _record_memory_safely(
+                project_id,
+                lambda: record_analysis_memory(project_id, analysis),
+                "analysis_memory",
+            )
             add_project_event(project_id, "summarizing_chunks", f"完成 {len(section_summaries)} 个 section agent 分析")
             _add_thought_event(
                 project_id,
@@ -181,6 +192,11 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
         def build_code_plan() -> dict:
             experiment_spec = build_experiment_spec(analysis, db_chunks)
             _write_json(generated_dir / "experiment_spec.json", experiment_spec)
+            _record_memory_safely(
+                project_id,
+                lambda: record_experiment_spec_memory(project_id, experiment_spec),
+                "experiment_spec_memory",
+            )
             add_project_event(
                 project_id,
                 ProjectStatus.PLANNING_CODE.value,
@@ -192,6 +208,11 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
                 },
             )
             code_plan = plan_code_project(analysis, db_chunks, experiment_spec)
+            _record_memory_safely(
+                project_id,
+                lambda: record_code_plan_memory(project_id, code_plan),
+                "code_plan_memory",
+            )
             _write_json(generated_dir / "code_spec.json", code_plan)
             _write_json(generated_dir / "code_plan.json", code_plan)
             _add_thought_event(
@@ -303,6 +324,11 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
                 "commands": validation_result.get("commands", []),
             },
         )
+        _record_memory_safely(
+            project_id,
+            lambda: record_validation_memory(project_id, validation_result),
+            "validation_memory",
+        )
         _run_step(
             project_id,
             ProjectStatus.PACKAGING,
@@ -317,6 +343,18 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
         update_project_status(project_id, ProjectStatus.FAILED, "failed", 100, str(exc))
         add_project_event(project_id, "pipeline", f"任务失败：{exc}", level="error")
         raise
+
+
+def _record_memory_safely(project_id: str, action: Callable[[], None], label: str) -> None:
+    try:
+        action()
+    except Exception as exc:
+        add_project_event(
+            project_id,
+            "project_memory",
+            f"Project memory write skipped during {label}: {exc}",
+            level="warning",
+        )
 
 
 def _run_step(
