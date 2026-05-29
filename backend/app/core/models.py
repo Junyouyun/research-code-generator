@@ -59,6 +59,58 @@ class MemoryItem:
     updated_at: str | None = None
 
 
+@dataclass(frozen=True)
+class GraphEntity:
+    entity_id: str
+    user_id: str
+    project_id: str
+    paper_id: str | None
+    paper_version_id: str | None
+    entity_type: str
+    name: str
+    normalized_name: str
+    description: str | None = None
+    importance: float = 0.5
+    confidence: float = 0.7
+    source_chunk_ids: list[str] | None = None
+    evidence: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class GraphRelation:
+    relation_id: str
+    user_id: str
+    project_id: str
+    paper_id: str | None
+    paper_version_id: str | None
+    source_entity_id: str
+    target_entity_id: str
+    relation_type: str
+    description: str | None = None
+    confidence: float = 0.7
+    source_chunk_ids: list[str] | None = None
+    evidence: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class GraphExtractionRun:
+    run_id: str
+    user_id: str
+    project_id: str
+    paper_id: str | None
+    paper_version_id: str | None
+    status: str
+    entity_count: int = 0
+    relation_count: int = 0
+    error_message: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class ProjectStatus(StrEnum):
     UPLOADED = "uploaded"
     PARSING = "parsing"

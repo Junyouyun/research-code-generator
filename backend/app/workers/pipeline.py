@@ -6,6 +6,7 @@ from typing import Callable, TypeVar
 from app.config import ARTIFACT_DIR, GENERATED_DIR, PARSED_DIR
 from app.core.database import (
     add_project_event,
+    get_project,
     list_document_chunks,
     save_document_chunks,
     update_project_status,
@@ -296,6 +297,7 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
             55,
             summarize_chunks,
         )
+        _build_knowledge_graph_safely(project_id, analysis, db_chunks)
         _run_step(project_id, ProjectStatus.BUILDING_REPORT, "生成研究报告", 68, build_report)
         code_plan = _run_step(project_id, ProjectStatus.PLANNING_CODE, "规划代码结构", 76, build_code_plan)
         _run_step(
@@ -343,6 +345,43 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
         update_project_status(project_id, ProjectStatus.FAILED, "failed", 100, str(exc))
         add_project_event(project_id, "pipeline", f"任务失败：{exc}", level="error")
         raise
+
+
+def _build_knowledge_graph_safely(project_id: str, analysis: dict, chunks: list[dict]) -> None:
+    project = get_project(project_id)
+    if project is None:
+        return
+
+    add_project_event(project_id, "knowledge_graph", "开始：抽取论文知识图谱")
+    try:
+        from app.services.knowledge_graph_store import build_and_save_project_graph
+
+        result = build_and_save_project_graph(project, analysis, chunks)
+        add_project_event(
+            project_id,
+            "knowledge_graph",
+            f"完成：抽取 {result.get('entity_count', 0)} 个实体、{result.get('relation_count', 0)} 条关系",
+            details={
+                "kind": "knowledge_graph",
+                "entity_count": result.get("entity_count", 0),
+                "relation_count": result.get("relation_count", 0),
+                "selected_chunk_ids": result.get("selected_chunk_ids", []),
+            },
+        )
+    except Exception as exc:
+        try:
+            from app.services.knowledge_graph_store import record_project_graph_failure
+
+            record_project_graph_failure(project, str(exc))
+        except Exception:
+            pass
+        add_project_event(
+            project_id,
+            "knowledge_graph",
+            f"知识图谱抽取失败，已跳过：{exc}",
+            level="warning",
+            details={"kind": "knowledge_graph", "error": str(exc)},
+        )
 
 
 def _record_memory_safely(project_id: str, action: Callable[[], None], label: str) -> None:

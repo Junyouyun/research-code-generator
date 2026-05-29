@@ -11,6 +11,9 @@ from app.config import DATABASE_PATH
 from app.core.models import (
     Conversation,
     ConversationMessage,
+    GraphEntity,
+    GraphExtractionRun,
+    GraphRelation,
     MemoryItem,
     Project,
     ProjectEvent,
@@ -219,6 +222,66 @@ CREATE TABLE IF NOT EXISTS project_events (
 )
 """
 
+GRAPH_ENTITIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS graph_entities (
+    entity_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    paper_id TEXT,
+    paper_version_id TEXT,
+    entity_type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    description TEXT,
+    importance REAL NOT NULL DEFAULT 0.5,
+    confidence REAL NOT NULL DEFAULT 0.7,
+    source_chunk_ids TEXT,
+    evidence TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+)
+"""
+
+GRAPH_RELATIONS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS graph_relations (
+    relation_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    paper_id TEXT,
+    paper_version_id TEXT,
+    source_entity_id TEXT NOT NULL,
+    target_entity_id TEXT NOT NULL,
+    relation_type TEXT NOT NULL,
+    description TEXT,
+    confidence REAL NOT NULL DEFAULT 0.7,
+    source_chunk_ids TEXT,
+    evidence TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects (project_id),
+    FOREIGN KEY (source_entity_id) REFERENCES graph_entities (entity_id),
+    FOREIGN KEY (target_entity_id) REFERENCES graph_entities (entity_id)
+)
+"""
+
+GRAPH_EXTRACTION_RUNS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS graph_extraction_runs (
+    run_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    paper_id TEXT,
+    paper_version_id TEXT,
+    status TEXT NOT NULL,
+    entity_count INTEGER NOT NULL DEFAULT 0,
+    relation_count INTEGER NOT NULL DEFAULT 0,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+)
+"""
+
 
 def _now() -> str:
     # return datetime.utcnow().isoformat(timespec="seconds")
@@ -253,6 +316,9 @@ def init_database() -> None:
         connection.execute(CHUNKS_TABLE_SQL)
         connection.execute(VECTOR_INDEX_RECORDS_TABLE_SQL)
         connection.execute(PROJECT_EVENTS_TABLE_SQL)
+        connection.execute(GRAPH_ENTITIES_TABLE_SQL)
+        connection.execute(GRAPH_RELATIONS_TABLE_SQL)
+        connection.execute(GRAPH_EXTRACTION_RUNS_TABLE_SQL)
         _ensure_projects_identity_columns(connection)
         _ensure_document_chunks_identity_columns(connection)
         _ensure_project_events_details_column(connection)
@@ -998,6 +1064,290 @@ def update_memory_item_status(
     return _row_to_memory_item(row) if row is not None else None
 
 
+def save_project_graph(project_id: str, user_id: str, graph: dict) -> dict:
+    init_database()
+    now = _now()
+    entities = graph.get("entities") if isinstance(graph.get("entities"), list) else []
+    relations = graph.get("relations") if isinstance(graph.get("relations"), list) else []
+
+    with _connect() as connection:
+        project_row = connection.execute(
+            """
+            SELECT paper_id, paper_version_id
+            FROM projects
+            WHERE project_id = ?
+              AND user_id = ?
+            """,
+            (project_id, user_id),
+        ).fetchone()
+        if project_row is None:
+            return {"entity_count": 0, "relation_count": 0}
+
+        paper_id = project_row["paper_id"]
+        paper_version_id = project_row["paper_version_id"]
+
+        _delete_project_graph(connection, project_id, user_id)
+
+        entity_id_by_key: dict[str, str] = {}
+        entity_rows = []
+        for entity in entities:
+            if not isinstance(entity, dict):
+                continue
+            name = _clean_text(entity.get("name"))
+            entity_type = _clean_text(entity.get("entity_type"))
+            normalized_name = _clean_text(entity.get("normalized_name")) or _normalize_graph_name(name)
+            if not name or not entity_type or not normalized_name:
+                continue
+
+            key = _graph_entity_key(entity_type, normalized_name)
+            if key in entity_id_by_key:
+                continue
+
+            entity_id = uuid4().hex
+            entity_id_by_key[key] = entity_id
+            entity_rows.append(
+                (
+                    entity_id,
+                    user_id,
+                    project_id,
+                    paper_id,
+                    paper_version_id,
+                    entity_type,
+                    name,
+                    normalized_name,
+                    _clean_text(entity.get("description")) or None,
+                    _safe_float(entity.get("importance"), 0.5),
+                    _safe_float(entity.get("confidence"), 0.7),
+                    json.dumps(_string_list(entity.get("source_chunk_ids")), ensure_ascii=False),
+                    _clean_text(entity.get("evidence")) or None,
+                    now,
+                    now,
+                )
+            )
+
+        if entity_rows:
+            connection.executemany(
+                """
+                INSERT INTO graph_entities (
+                    entity_id,
+                    user_id,
+                    project_id,
+                    paper_id,
+                    paper_version_id,
+                    entity_type,
+                    name,
+                    normalized_name,
+                    description,
+                    importance,
+                    confidence,
+                    source_chunk_ids,
+                    evidence,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                entity_rows,
+            )
+
+        relation_keys: set[str] = set()
+        relation_rows = []
+        for relation in relations:
+            if not isinstance(relation, dict):
+                continue
+            source_key = _resolve_relation_entity_key(relation.get("source"), relation.get("source_entity_type"), entity_id_by_key)
+            target_key = _resolve_relation_entity_key(relation.get("target"), relation.get("target_entity_type"), entity_id_by_key)
+            source_entity_id = entity_id_by_key.get(source_key)
+            target_entity_id = entity_id_by_key.get(target_key)
+            relation_type = _clean_text(relation.get("relation_type"))
+            if not source_entity_id or not target_entity_id or not relation_type:
+                continue
+
+            relation_key = f"{source_entity_id}:{relation_type}:{target_entity_id}"
+            if relation_key in relation_keys:
+                continue
+            relation_keys.add(relation_key)
+
+            relation_rows.append(
+                (
+                    uuid4().hex,
+                    user_id,
+                    project_id,
+                    paper_id,
+                    paper_version_id,
+                    source_entity_id,
+                    target_entity_id,
+                    relation_type,
+                    _clean_text(relation.get("description")) or None,
+                    _safe_float(relation.get("confidence"), 0.7),
+                    json.dumps(_string_list(relation.get("source_chunk_ids")), ensure_ascii=False),
+                    _clean_text(relation.get("evidence")) or None,
+                    now,
+                    now,
+                )
+            )
+
+        if relation_rows:
+            connection.executemany(
+                """
+                INSERT INTO graph_relations (
+                    relation_id,
+                    user_id,
+                    project_id,
+                    paper_id,
+                    paper_version_id,
+                    source_entity_id,
+                    target_entity_id,
+                    relation_type,
+                    description,
+                    confidence,
+                    source_chunk_ids,
+                    evidence,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                relation_rows,
+            )
+
+    return {"entity_count": len(entity_rows), "relation_count": len(relation_rows)}
+
+
+def delete_project_graph(project_id: str, user_id: str) -> None:
+    init_database()
+    with _connect() as connection:
+        _delete_project_graph(connection, project_id, user_id)
+
+
+def list_project_graph_entities(project_id: str, user_id: str) -> list[GraphEntity]:
+    init_database()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM graph_entities
+            WHERE project_id = ?
+              AND user_id = ?
+            ORDER BY importance DESC, confidence DESC, name ASC
+            """,
+            (project_id, user_id),
+        ).fetchall()
+
+    return [_row_to_graph_entity(row) for row in rows]
+
+
+def list_project_graph_relations(project_id: str, user_id: str) -> list[GraphRelation]:
+    init_database()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM graph_relations
+            WHERE project_id = ?
+              AND user_id = ?
+            ORDER BY confidence DESC, relation_type ASC
+            """,
+            (project_id, user_id),
+        ).fetchall()
+
+    return [_row_to_graph_relation(row) for row in rows]
+
+
+def get_graph_entity(entity_id: str, user_id: str) -> GraphEntity | None:
+    init_database()
+    with _connect() as connection:
+        row = connection.execute(
+            """
+            SELECT *
+            FROM graph_entities
+            WHERE entity_id = ?
+              AND user_id = ?
+            """,
+            (entity_id, user_id),
+        ).fetchone()
+
+    return _row_to_graph_entity(row) if row is not None else None
+
+
+def list_entity_relations(entity_id: str, user_id: str) -> list[GraphRelation]:
+    init_database()
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM graph_relations
+            WHERE user_id = ?
+              AND (source_entity_id = ? OR target_entity_id = ?)
+            ORDER BY confidence DESC, relation_type ASC
+            """,
+            (user_id, entity_id, entity_id),
+        ).fetchall()
+
+    return [_row_to_graph_relation(row) for row in rows]
+
+
+def record_graph_extraction_run(
+    project_id: str,
+    user_id: str,
+    status: str,
+    entity_count: int = 0,
+    relation_count: int = 0,
+    error_message: str | None = None,
+) -> GraphExtractionRun:
+    init_database()
+    now = _now()
+
+    with _connect() as connection:
+        _, paper_id, paper_version_id = _get_project_paper_identity(connection, project_id)
+        run_id = uuid4().hex
+        connection.execute(
+            """
+            INSERT INTO graph_extraction_runs (
+                run_id,
+                user_id,
+                project_id,
+                paper_id,
+                paper_version_id,
+                status,
+                entity_count,
+                relation_count,
+                error_message,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                user_id,
+                project_id,
+                paper_id,
+                paper_version_id,
+                status,
+                entity_count,
+                relation_count,
+                error_message,
+                now,
+                now,
+            ),
+        )
+
+    return GraphExtractionRun(
+        run_id=run_id,
+        user_id=user_id,
+        project_id=project_id,
+        paper_id=paper_id,
+        paper_version_id=paper_version_id,
+        status=status,
+        entity_count=entity_count,
+        relation_count=relation_count,
+        error_message=error_message,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def create_chunks_table() -> None:
     with _connect() as connection:
         connection.execute(CHUNKS_TABLE_SQL)
@@ -1572,6 +1922,116 @@ def _vector_index_record_to_row(record: dict) -> tuple:
     )
 
 
+def _delete_project_graph(
+    connection: sqlite3.Connection,
+    project_id: str,
+    user_id: str,
+) -> None:
+    connection.execute(
+        "DELETE FROM graph_relations WHERE project_id = ? AND user_id = ?",
+        (project_id, user_id),
+    )
+    connection.execute(
+        "DELETE FROM graph_entities WHERE project_id = ? AND user_id = ?",
+        (project_id, user_id),
+    )
+
+
+def _row_to_graph_entity(row: sqlite3.Row) -> GraphEntity:
+    return GraphEntity(
+        entity_id=row["entity_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        paper_id=row["paper_id"],
+        paper_version_id=row["paper_version_id"],
+        entity_type=row["entity_type"],
+        name=row["name"],
+        normalized_name=row["normalized_name"],
+        description=row["description"],
+        importance=float(row["importance"]),
+        confidence=float(row["confidence"]),
+        source_chunk_ids=_decode_string_list(row["source_chunk_ids"]),
+        evidence=row["evidence"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_graph_relation(row: sqlite3.Row) -> GraphRelation:
+    return GraphRelation(
+        relation_id=row["relation_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        paper_id=row["paper_id"],
+        paper_version_id=row["paper_version_id"],
+        source_entity_id=row["source_entity_id"],
+        target_entity_id=row["target_entity_id"],
+        relation_type=row["relation_type"],
+        description=row["description"],
+        confidence=float(row["confidence"]),
+        source_chunk_ids=_decode_string_list(row["source_chunk_ids"]),
+        evidence=row["evidence"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _graph_entity_key(entity_type: str, normalized_name: str) -> str:
+    return f"{entity_type.strip().lower()}::{normalized_name.strip().lower()}"
+
+
+def _resolve_relation_entity_key(
+    name: object,
+    entity_type: object,
+    entity_id_by_key: dict[str, str],
+) -> str:
+    normalized_name = _normalize_graph_name(_clean_text(name))
+    clean_type = _clean_text(entity_type)
+    if clean_type:
+        return _graph_entity_key(clean_type, normalized_name)
+
+    matches = [
+        key
+        for key in entity_id_by_key
+        if key.endswith(f"::{normalized_name}")
+    ]
+    return matches[0] if len(matches) == 1 else ""
+
+
+def _normalize_graph_name(value: str) -> str:
+    return " ".join(value.strip().lower().split())
+
+
+def _clean_text(value: object) -> str:
+    return str(value).strip() if value is not None else ""
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(parsed, 1.0))
+
+
+def _string_list(value: object) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        raw_items = [value]
+    else:
+        return []
+
+    result = []
+    for item in raw_items:
+        text = _clean_text(item)
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
 def _row_to_user(row: sqlite3.Row) -> User:
     return User(
         user_id=row["user_id"],
@@ -1751,6 +2211,24 @@ def _ensure_indexes(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_vectors_paper_version_id ON vector_index_records (paper_version_id)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_entities_project ON graph_entities (user_id, project_id, entity_type)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_entities_name ON graph_entities (project_id, normalized_name)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_relations_project ON graph_relations (user_id, project_id, relation_type)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_relations_source ON graph_relations (source_entity_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_relations_target ON graph_relations (target_entity_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_graph_runs_project ON graph_extraction_runs (user_id, project_id, created_at)"
+    )
 
 
 def _decode_details(value: str | None) -> dict | None:
@@ -1763,6 +2241,20 @@ def _decode_details(value: str | None) -> dict | None:
         return None
 
     return decoded if isinstance(decoded, dict) else None
+
+
+def _decode_string_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+
+    try:
+        decoded = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(decoded, list):
+        return []
+    return [_clean_text(item) for item in decoded if _clean_text(item)]
 
 
 def _estimate_token_count(content: str) -> int:

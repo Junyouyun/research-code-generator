@@ -186,6 +186,43 @@ class ProjectMemoriesResponse(BaseModel):
     memories: list[ProjectMemoryResponse] = Field(default_factory=list)
 
 
+class GraphEntityResponse(BaseModel):
+    entity_id: str
+    entity_type: str
+    name: str
+    normalized_name: str
+    description: str | None = None
+    importance: float = 0.5
+    confidence: float = 0.7
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    evidence: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class GraphRelationResponse(BaseModel):
+    relation_id: str
+    source_entity_id: str
+    target_entity_id: str
+    source_name: str | None = None
+    target_name: str | None = None
+    relation_type: str
+    description: str | None = None
+    confidence: float = 0.7
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    evidence: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProjectGraphResponse(BaseModel):
+    project_id: str
+    paper_id: str | None = None
+    paper_version_id: str | None = None
+    entities: list[GraphEntityResponse] = Field(default_factory=list)
+    relations: list[GraphRelationResponse] = Field(default_factory=list)
+
+
 class UserMemoryResponse(BaseModel):
     memory_id: str
     memory_type: str
