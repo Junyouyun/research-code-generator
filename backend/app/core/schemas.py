@@ -223,6 +223,14 @@ class ProjectGraphResponse(BaseModel):
     relations: list[GraphRelationResponse] = Field(default_factory=list)
 
 
+class ProjectGraphContextResponse(BaseModel):
+    project_id: str
+    query: str
+    entities: list[GraphEntityResponse] = Field(default_factory=list)
+    relations: list[GraphRelationResponse] = Field(default_factory=list)
+    paths: list[dict] = Field(default_factory=list)
+
+
 class UserMemoryResponse(BaseModel):
     memory_id: str
     memory_type: str

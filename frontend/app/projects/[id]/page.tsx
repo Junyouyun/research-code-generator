@@ -22,7 +22,9 @@ import {
   getMe,
   getProject,
   getProjectConversation,
+  getProjectGraph,
   getReport,
+  ProjectGraphResult,
   ProjectStatus as ProjectStatusData,
   QuestionResult,
   User,
@@ -34,7 +36,7 @@ type QaMessage = {
   result: QuestionResult | null;
 };
 
-type ArtifactKind = "report" | "code";
+type ArtifactKind = "report" | "code" | "graph";
 
 function isFinalStatus(status?: string) {
   return status === "completed" || status === "failed";
@@ -53,6 +55,8 @@ export default function ProjectPage() {
   const [files, setFiles] = useState<CodeFile[]>([]);
   const [activePath, setActivePath] = useState("");
   const [codeError, setCodeError] = useState("");
+  const [graph, setGraph] = useState<ProjectGraphResult | null>(null);
+  const [graphError, setGraphError] = useState("");
   const [qaMessages, setQaMessages] = useState<QaMessage[]>([]);
   const [conversationId, setConversationId] = useState("");
   const [paperTitle, setPaperTitle] = useState("已上传的论文");
@@ -99,6 +103,13 @@ export default function ProjectPage() {
 
   useEffect(() => {
     if (!user) {
+      return;
+    }
+    if (project?.status === "failed") {
+      setGraphError("分析失败，知识图谱未生成。");
+      return;
+    }
+    if (project?.status !== "completed") {
       return;
     }
 
@@ -266,6 +277,52 @@ export default function ProjectPage() {
     };
   }, [files.length, project?.status, projectId, user]);
 
+  useEffect(() => {
+    if (!user) {
+      return;
+    }
+
+    let active = true;
+    let timer: number | undefined;
+
+    async function loadGraph() {
+      try {
+        const data = await getProjectGraph(projectId);
+        if (!active) {
+          return;
+        }
+
+        setGraph(data);
+        setGraphError("");
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+
+        if (project?.status === "failed") {
+          setGraphError("分析失败，知识图谱未生成。");
+          return;
+        }
+
+        setGraphError(error instanceof Error ? error.message : "知识图谱还未生成。");
+        if (project?.status !== "completed") {
+          timer = window.setTimeout(loadGraph, 3000);
+        }
+      }
+    }
+
+    if (!graph) {
+      loadGraph();
+    }
+
+    return () => {
+      active = false;
+      if (timer) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [graph, project?.status, projectId, user]);
+
   function openReport() {
     setArtifactKind("report");
     setArtifactOpen(true);
@@ -275,6 +332,12 @@ export default function ProjectPage() {
   function openCodeFile(path: string) {
     setActivePath(path);
     setArtifactKind("code");
+    setArtifactOpen(true);
+    setArtifactCollapsed(false);
+  }
+
+  function openGraph() {
+    setArtifactKind("graph");
     setArtifactOpen(true);
     setArtifactCollapsed(false);
   }
@@ -346,9 +409,12 @@ export default function ProjectPage() {
             reportError={reportError}
             files={files}
             codeError={codeError}
+            graphReady={Boolean(graph?.entities.length || graph?.relations.length)}
+            graphError={graphError}
             artifactUrl={getArtifactUrl(projectId)}
             onOpenReport={openReport}
             onOpenFile={openCodeFile}
+            onOpenGraph={openGraph}
           />
 
           {qaMessages.map((message) => (
@@ -373,6 +439,8 @@ export default function ProjectPage() {
         files={files}
         activePath={activePath}
         codeError={codeError}
+        graph={graph}
+        graphError={graphError}
         artifactUrl={getArtifactUrl(projectId)}
         onOpen={() => setArtifactOpen(true)}
         onClose={() => setArtifactOpen(false)}

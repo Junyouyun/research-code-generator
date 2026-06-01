@@ -27,9 +27,12 @@ type ProjectAnalysisMessageProps = {
   reportError: string;
   files: CodeFile[];
   codeError: string;
+  graphReady: boolean;
+  graphError: string;
   artifactUrl: string;
   onOpenReport: () => void;
   onOpenFile: (path: string) => void;
+  onOpenGraph: () => void;
 };
 
 type QuestionAnswerMessageProps = {
@@ -122,9 +125,12 @@ export function ProjectAnalysisMessage({
   reportError,
   files,
   codeError,
+  graphReady,
+  graphError,
   artifactUrl,
   onOpenReport,
   onOpenFile,
+  onOpenGraph,
 }: ProjectAnalysisMessageProps) {
   const events = useMemo(() => visibleAnalysisEvents(project?.events), [project?.events]);
   const latestThought = useMemo(
@@ -183,7 +189,7 @@ export function ProjectAnalysisMessage({
         {isFailed(project?.status) && project?.error_message ? <p className="error-text">{project.error_message}</p> : null}
         {projectError ? <p className="error-text">{projectError}</p> : null}
 
-        {isCompleted(project?.status) || reportReady || files.length ? (
+        {isCompleted(project?.status) || reportReady || files.length || graphReady ? (
           <div className="artifact-strip">
             {reportReady ? (
               <button className="artifact-chip" type="button" onClick={onOpenReport}>
@@ -207,6 +213,18 @@ export function ProjectAnalysisMessage({
               </button>
             ) : codeError ? (
               <p className="muted">{codeError}</p>
+            ) : null}
+
+            {graphReady ? (
+              <button className="artifact-chip" type="button" onClick={onOpenGraph}>
+                <span className="file-type">KG</span>
+                <div>
+                  <strong>知识图谱</strong>
+                  <small>实体、关系和证据 chunk，一跳邻域浏览</small>
+                </div>
+              </button>
+            ) : graphError ? (
+              <p className="muted">{graphError}</p>
             ) : null}
 
             {files.length ? (

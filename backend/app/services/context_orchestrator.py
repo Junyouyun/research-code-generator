@@ -37,6 +37,7 @@ def build_qa_context(
     )
     project_memory_context = get_project_memory_context(project.project_id, user_id, limit=12)
     user_memory_context = get_user_memory_context(user_id, question, limit=memory_top_k)
+    graph_context = _search_graph_context_safely(project, user_id, question)
 
     from app.services.vector_store import search_related_papers, search_within_paper
 
@@ -68,6 +69,7 @@ def build_qa_context(
         "conversation_context": conversation_context,
         "project_memory_context": project_memory_context,
         "user_memory_context": user_memory_context,
+        "graph_context": graph_context,
         "current_paper_chunks": current_chunks,
         "related_papers": related_papers,
         "retrieval_trace": {
@@ -77,6 +79,8 @@ def build_qa_context(
             "conversation_messages": len(conversation_context),
             "project_memories": len(project_memory_context),
             "user_memories": len(user_memory_context),
+            "graph_entities": len(graph_context.get("entities", [])),
+            "graph_relations": len(graph_context.get("relations", [])),
             "current_chunk_ids": current_chunk_ids,
             "related_papers": len(related_papers),
         },
@@ -92,6 +96,22 @@ def _conversation_context(messages: list) -> list[dict]:
         for message in messages
         if message.role in {"user", "assistant"} and message.content
     ]
+
+
+def _search_graph_context_safely(project: Project, user_id: str, question: str) -> dict:
+    try:
+        from app.services.knowledge_graph_store import search_graph_context
+
+        return search_graph_context(
+            project_id=project.project_id,
+            user_id=user_id,
+            query=question,
+            limit_entities=8,
+            limit_relations=20,
+            depth=1,
+        )
+    except Exception:
+        return {"entities": [], "relations": [], "paths": []}
 
 
 def _attach_related_chunk_content(related_papers: list[dict]) -> list[dict]:

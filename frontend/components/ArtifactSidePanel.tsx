@@ -1,8 +1,10 @@
 "use client";
 
-import { CodeFile } from "../lib/api";
+import { useMemo, useState } from "react";
 
-type ArtifactKind = "report" | "code";
+import { CodeFile, GraphEntity, GraphRelation, ProjectGraphResult } from "../lib/api";
+
+type ArtifactKind = "report" | "code" | "graph";
 
 type ArtifactSidePanelProps = {
   open: boolean;
@@ -13,6 +15,8 @@ type ArtifactSidePanelProps = {
   files: CodeFile[];
   activePath: string;
   codeError: string;
+  graph: ProjectGraphResult | null;
+  graphError: string;
   artifactUrl: string;
   onOpen: () => void;
   onClose: () => void;
@@ -30,14 +34,60 @@ export function ArtifactSidePanel({
   files,
   activePath,
   codeError,
+  graph,
+  graphError,
   artifactUrl,
-  onOpen,
   onClose,
   onToggleCollapse,
   onSelectKind,
   onSelectFile,
 }: ArtifactSidePanelProps) {
   const activeFile = files.find((file) => file.path === activePath) ?? files[0];
+  const [entityType, setEntityType] = useState("");
+  const [relationType, setRelationType] = useState("");
+  const [query, setQuery] = useState("");
+  const [selectedEntityId, setSelectedEntityId] = useState("");
+
+  const graphEntities = graph?.entities ?? [];
+  const graphRelations = graph?.relations ?? [];
+  const entityTypes = useMemo(() => uniqueValues(graphEntities.map((entity) => entity.entity_type)), [graphEntities]);
+  const relationTypes = useMemo(
+    () => uniqueValues(graphRelations.map((relation) => relation.relation_type)),
+    [graphRelations],
+  );
+  const filteredEntities = useMemo(
+    () =>
+      graphEntities.filter((entity) => {
+        const text = `${entity.name} ${entity.description ?? ""} ${entity.entity_type}`.toLowerCase();
+        return (!entityType || entity.entity_type === entityType) && (!query || text.includes(query.toLowerCase()));
+      }),
+    [entityType, graphEntities, query],
+  );
+  const selectedEntity = graphEntities.find((entity) => entity.entity_id === selectedEntityId) ?? filteredEntities[0];
+  const visibleRelations = useMemo(
+    () =>
+      graphRelations.filter((relation) => {
+        const touchesSelected =
+          !selectedEntity ||
+          relation.source_entity_id === selectedEntity.entity_id ||
+          relation.target_entity_id === selectedEntity.entity_id;
+        return touchesSelected && (!relationType || relation.relation_type === relationType);
+      }),
+    [graphRelations, relationType, selectedEntity],
+  );
+
+  const panelTitle =
+    kind === "report"
+      ? "研究报告"
+      : kind === "graph"
+        ? "知识图谱"
+        : activeFile?.path ?? "生成代码";
+  const panelMeta =
+    kind === "report"
+      ? "Markdown"
+      : kind === "graph"
+        ? `${graphEntities.length} entities · ${graphRelations.length} relations`
+        : "Code Artifact";
 
   if (!open) {
     return null;
@@ -60,8 +110,8 @@ export function ArtifactSidePanel({
     <aside className="artifact-side-panel">
       <header className="artifact-panel-header">
         <div>
-          <strong>{kind === "report" ? "研究报告" : activeFile?.path ?? "生成代码"}</strong>
-          <span>{kind === "report" ? "Markdown" : "Code Artifact"}</span>
+          <strong>{panelTitle}</strong>
+          <span>{panelMeta}</span>
         </div>
         <div className="artifact-panel-actions">
           <button type="button" onClick={onToggleCollapse}>
@@ -80,11 +130,10 @@ export function ArtifactSidePanel({
         <button className={kind === "code" ? "active" : ""} type="button" onClick={() => onSelectKind("code")}>
           代码
         </button>
-        {files.length ? (
-          <a href={artifactUrl}>
-            下载 zip
-          </a>
-        ) : null}
+        <button className={kind === "graph" ? "active" : ""} type="button" onClick={() => onSelectKind("graph")}>
+          图谱
+        </button>
+        {files.length ? <a href={artifactUrl}>下载 zip</a> : null}
       </div>
 
       {kind === "report" ? (
@@ -95,7 +144,7 @@ export function ArtifactSidePanel({
             <p className="muted">{reportError || "报告还在生成中。"}</p>
           )}
         </div>
-      ) : (
+      ) : kind === "code" ? (
         <div className="artifact-code-view">
           <div className="side-file-list">
             {files.map((file) => (
@@ -117,7 +166,158 @@ export function ArtifactSidePanel({
             )}
           </div>
         </div>
+      ) : (
+        <GraphBrowser
+          entities={filteredEntities}
+          relations={visibleRelations}
+          allRelations={graphRelations}
+          entityTypes={entityTypes}
+          relationTypes={relationTypes}
+          entityType={entityType}
+          relationType={relationType}
+          query={query}
+          selectedEntity={selectedEntity}
+          error={graphError}
+          onEntityTypeChange={setEntityType}
+          onRelationTypeChange={setRelationType}
+          onQueryChange={setQuery}
+          onSelectEntity={setSelectedEntityId}
+        />
       )}
     </aside>
   );
+}
+
+function GraphBrowser({
+  entities,
+  relations,
+  allRelations,
+  entityTypes,
+  relationTypes,
+  entityType,
+  relationType,
+  query,
+  selectedEntity,
+  error,
+  onEntityTypeChange,
+  onRelationTypeChange,
+  onQueryChange,
+  onSelectEntity,
+}: {
+  entities: GraphEntity[];
+  relations: GraphRelation[];
+  allRelations: GraphRelation[];
+  entityTypes: string[];
+  relationTypes: string[];
+  entityType: string;
+  relationType: string;
+  query: string;
+  selectedEntity?: GraphEntity;
+  error: string;
+  onEntityTypeChange: (value: string) => void;
+  onRelationTypeChange: (value: string) => void;
+  onQueryChange: (value: string) => void;
+  onSelectEntity: (value: string) => void;
+}) {
+  if (!entities.length && !allRelations.length) {
+    return (
+      <div className="artifact-content graph-empty">
+        <strong>暂无图谱数据</strong>
+        <p>{error || "知识图谱会在论文分析完成后生成。"}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="graph-browser">
+      <div className="graph-toolbar">
+        <input value={query} onChange={(event) => onQueryChange(event.target.value)} placeholder="搜索实体" />
+        <select value={entityType} onChange={(event) => onEntityTypeChange(event.target.value)}>
+          <option value="">全部实体</option>
+          {entityTypes.map((type) => (
+            <option value={type} key={type}>
+              {type}
+            </option>
+          ))}
+        </select>
+        <select value={relationType} onChange={(event) => onRelationTypeChange(event.target.value)}>
+          <option value="">全部关系</option>
+          {relationTypes.map((type) => (
+            <option value={type} key={type}>
+              {type}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="graph-layout">
+        <div className="graph-entity-list">
+          {entities.map((entity) => (
+            <button
+              className={entity.entity_id === selectedEntity?.entity_id ? "active" : ""}
+              type="button"
+              key={entity.entity_id}
+              onClick={() => onSelectEntity(entity.entity_id)}
+            >
+              <span>{entity.entity_type}</span>
+              <strong>{entity.name}</strong>
+              {entity.description ? <small>{entity.description}</small> : null}
+            </button>
+          ))}
+        </div>
+
+        <div className="graph-detail">
+          {selectedEntity ? (
+            <section className="graph-card">
+              <div className="graph-card-head">
+                <span>{selectedEntity.entity_type}</span>
+                <strong>{selectedEntity.name}</strong>
+              </div>
+              {selectedEntity.description ? <p>{selectedEntity.description}</p> : null}
+              <EvidenceTags chunkIds={selectedEntity.source_chunk_ids} />
+            </section>
+          ) : null}
+
+          <section className="graph-card graph-relations">
+            <div className="graph-card-head">
+              <span>relations</span>
+              <strong>一跳邻域</strong>
+            </div>
+            {relations.length ? (
+              relations.map((relation) => (
+                <article key={relation.relation_id}>
+                  <div>
+                    <strong>{relation.source_name || relation.source_entity_id}</strong>
+                    <span>{relation.relation_type}</span>
+                    <strong>{relation.target_name || relation.target_entity_id}</strong>
+                  </div>
+                  {relation.description ? <p>{relation.description}</p> : null}
+                  <EvidenceTags chunkIds={relation.source_chunk_ids} />
+                </article>
+              ))
+            ) : (
+              <p className="muted">当前筛选下没有关系。</p>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EvidenceTags({ chunkIds }: { chunkIds: string[] }) {
+  if (!chunkIds.length) {
+    return null;
+  }
+  return (
+    <div className="graph-evidence">
+      {chunkIds.slice(0, 6).map((chunkId) => (
+        <span key={chunkId}>{chunkId}</span>
+      ))}
+    </div>
+  );
+}
+
+function uniqueValues(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean))).sort();
 }

@@ -1050,6 +1050,176 @@ p {
   background: #f8fafc;
 }
 
+.graph-browser {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.graph-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 138px 138px;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--surface-soft);
+}
+
+.graph-toolbar input,
+.graph-toolbar select {
+  min-height: 36px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  outline: none;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.graph-toolbar input:focus,
+.graph-toolbar select:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 3px rgba(23, 92, 211, 0.1);
+}
+
+.graph-layout {
+  display: grid;
+  grid-template-columns: minmax(180px, 34%) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.graph-entity-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+  border-right: 1px solid var(--line-soft);
+}
+
+.graph-entity-list button {
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.graph-entity-list button:hover,
+.graph-entity-list button.active {
+  border-color: #b2ccff;
+  background: #f5f8ff;
+}
+
+.graph-entity-list span,
+.graph-card-head span,
+.graph-relations article span {
+  width: fit-content;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--brand-strong);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.graph-entity-list strong,
+.graph-card-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.graph-entity-list small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.graph-detail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px;
+  background: #fbfcfe;
+}
+
+.graph-card {
+  display: grid;
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.graph-card-head {
+  display: grid;
+  gap: 7px;
+}
+
+.graph-card p,
+.graph-relations article p,
+.graph-empty p {
+  color: #475467;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.graph-relations article {
+  display: grid;
+  gap: 8px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line-soft);
+}
+
+.graph-relations article:first-of-type {
+  border-top: 0;
+}
+
+.graph-relations article div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.graph-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.graph-evidence span {
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #344054;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.graph-empty {
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
 .muted {
   color: var(--text-muted);
 }
@@ -1620,6 +1790,17 @@ p {
 
   .artifact-code-view {
     grid-template-columns: 1fr;
+  }
+
+  .graph-toolbar,
+  .graph-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .graph-entity-list {
+    max-height: 260px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-soft);
   }
 
   .auth-shell {

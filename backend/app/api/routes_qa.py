@@ -65,6 +65,7 @@ def ask_project_question(
     conversation_context = qa_context["conversation_context"]
     project_memory_context = qa_context["project_memory_context"]
     user_memory_context = qa_context["user_memory_context"]
+    graph_context = qa_context["graph_context"]
     chunks = qa_context["current_paper_chunks"]
     related_papers = qa_context["related_papers"]
     retrieval_trace = qa_context["retrieval_trace"]
@@ -78,6 +79,7 @@ def ask_project_question(
             conversation_context=conversation_context,
             project_memory_context=project_memory_context,
             user_memory_context=user_memory_context,
+            graph_context=graph_context,
         )
     else:
         result = answer_question_with_chunks(
@@ -86,6 +88,7 @@ def ask_project_question(
             conversation_context=conversation_context,
             project_memory_context=project_memory_context,
             user_memory_context=user_memory_context,
+            graph_context=graph_context,
         )
 
     save_conversation_message(
@@ -100,6 +103,12 @@ def ask_project_question(
             "expanded": expanded,
             "used_related_chunks": result.get("used_related_chunks", []),
             "retrieval_trace": retrieval_trace,
+            "used_graph_entities": [
+                entity.get("entity_id") for entity in graph_context.get("entities", []) if entity.get("entity_id")
+            ],
+            "used_graph_relations": [
+                relation.get("relation_id") for relation in graph_context.get("relations", []) if relation.get("relation_id")
+            ],
             "used_user_memories": [
                 memory.get("memory_id") for memory in user_memory_context if memory.get("memory_id")
             ],

@@ -22,9 +22,15 @@ MAX_PYTHON_REPAIR_ATTEMPTS = 2
 LOCAL_RENDERED_FILES = {"README.md", "requirements.txt", "Dockerfile", "config.json", "main.py"}
 
 
-def build_code_spec(analysis: dict, chunks: list[dict], experiment_spec: dict | None = None) -> dict:
-    experiment_spec = normalize_experiment_spec(experiment_spec or {}, analysis)
+def build_code_spec(
+    analysis: dict,
+    chunks: list[dict],
+    experiment_spec: dict | None = None,
+    graph_context: dict | None = None,
+) -> dict:
+    experiment_spec = normalize_experiment_spec(experiment_spec or {}, analysis, graph_context)
     relevant_chunks = _select_relevant_chunks(chunks, MAX_SPEC_CHUNKS)
+    compact_graph_context = _compact_graph_context(graph_context or {})
     messages = [
         {
             "role": "system",
@@ -38,7 +44,7 @@ def build_code_spec(analysis: dict, chunks: list[dict], experiment_spec: dict | 
             "content": (
                 "Generate code_spec JSON with these fields: project_name, project_type, language, framework, entry_file, "
                 "run_command, docker, dependencies, config, assumptions, missing_details, files, entrypoint, "
-                "module_contracts, symbols, interfaces, experiment_contract, config_schema, expected_outputs.\n"
+                "module_contracts, symbols, interfaces, experiment_contract, graph_alignment, config_schema, expected_outputs.\n"
                 "project_type must be one of: rl, ml, simulation, optimization, analysis.\n"
                 "files must be an array of objects with path, purpose, kind.\n"
                 "Always include src/experiment.py. It must export run_experiment(config: dict) -> dict.\n"
@@ -75,7 +81,12 @@ def build_code_spec(analysis: dict, chunks: list[dict], experiment_spec: dict | 
                 "Treat experiment_spec as the highest-priority experiment definition. Use its state/action/reward/data/training fields "
                 "when planning modules and contracts. If analysis and experiment_spec conflict, follow experiment_spec and record "
                 "the uncertainty in assumptions or missing_details.\n\n"
+                "Use graph_context to map paper entities to code modules: environment -> Environment class, "
+                "state -> observation construction, action -> action parser/space, reward -> reward function, "
+                "algorithm/model -> Agent/Model class, dataset -> loader or synthetic fallback, metric -> evaluation outputs. "
+                "Only use graph facts with source_chunk_ids.\n\n"
                 f"experiment_spec:\n{json.dumps(experiment_spec, ensure_ascii=False)}\n\n"
+                f"graph_context:\n{json.dumps(compact_graph_context, ensure_ascii=False)}\n\n"
                 f"analysis:\n{json.dumps(_compact_analysis(analysis), ensure_ascii=False)}\n\n"
                 f"relevant_chunks:\n{json.dumps(relevant_chunks, ensure_ascii=False)}"
             ),
@@ -86,7 +97,7 @@ def build_code_spec(analysis: dict, chunks: list[dict], experiment_spec: dict | 
     except Exception:
         spec = _fallback_code_spec(analysis)
     spec = apply_experiment_framework(spec, experiment_spec)
-    return _normalize_code_spec(spec, analysis, experiment_spec)
+    return _normalize_code_spec(spec, analysis, experiment_spec, graph_context)
 
 
 def generate_code_files_from_spec(
@@ -94,8 +105,11 @@ def generate_code_files_from_spec(
     analysis: dict,
     chunks: list[dict],
     output_dir: Path,
+    graph_context: dict | None = None,
 ) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
+    if graph_context and not spec.get("graph_context"):
+        spec = {**spec, "graph_context": _compact_graph_context(graph_context)}
 
     file_plans = [file_plan for file_plan in spec.get("files", []) if file_plan.get("path", "").strip()]
     local_file_plans = [file_plan for file_plan in file_plans if _is_local_rendered_file(file_plan.get("path", ""))]
@@ -390,6 +404,7 @@ def _file_generation_messages(spec: dict, analysis: dict, file_plan: dict, relev
                 "Project-local imports are managed from symbols/imports/depends_on; do not invent extra local import names. "
                 "The project is accepted when a short smoke run completes: prepare minimal inputs/environment, initialize the paper method, "
                 "and execute one tiny training/simulation/optimization/analysis loop. Do not chase full paper metrics here. "
+                "Use graph_context and graph_alignment to keep state/action/reward, modules, datasets, metrics, and code symbols aligned with the paper. "
                 "If a contract and your preferred design conflict, follow the contract."
             ),
         },
@@ -473,8 +488,18 @@ def _loads_json(content: str) -> dict:
     return data
 
 
-def _normalize_code_spec(spec: dict, analysis: dict, experiment_spec: dict | None = None) -> dict:
-    experiment_spec = normalize_experiment_spec(experiment_spec or spec.get("experiment_spec") or {}, analysis)
+def _normalize_code_spec(
+    spec: dict,
+    analysis: dict,
+    experiment_spec: dict | None = None,
+    graph_context: dict | None = None,
+) -> dict:
+    graph_context = graph_context or spec.get("graph_context") or {}
+    experiment_spec = normalize_experiment_spec(
+        experiment_spec or spec.get("experiment_spec") or {},
+        analysis,
+        graph_context,
+    )
     project_name = _safe_project_name(spec.get("project_name") or _guess_project_name(analysis))
     project_type = _normalize_project_type(spec.get("project_type")) or experiment_spec.get("project_type") or _guess_project_type(analysis)
     dependencies = _normalize_dependencies(spec.get("dependencies"))
@@ -506,6 +531,8 @@ def _normalize_code_spec(spec: dict, analysis: dict, experiment_spec: dict | Non
         "interfaces": interfaces,
         "experiment_spec": experiment_spec,
         "experiment_contract": _normalize_experiment_contract(spec.get("experiment_contract"), project_type, experiment_spec),
+        "graph_context": _compact_graph_context(graph_context),
+        "graph_alignment": _normalize_graph_alignment(spec.get("graph_alignment"), graph_context, files),
         "expected_outputs": _normalize_expected_outputs(spec.get("expected_outputs")),
         "assumptions": _as_string_list(spec.get("assumptions"))[:12],
         "missing_details": _as_string_list(spec.get("missing_details"))[:12],
@@ -1262,6 +1289,8 @@ def _contract_context(spec: dict, file_plan: dict) -> dict:
         "project_type": spec.get("project_type", ""),
         "experiment_spec": spec.get("experiment_spec", {}),
         "experiment_contract": spec.get("experiment_contract", {}),
+        "graph_alignment": spec.get("graph_alignment", {}),
+        "graph_context": spec.get("graph_context", {}),
         "files": spec.get("files", []),
         "module_contracts": spec.get("module_contracts", []),
         "symbols": spec.get("symbols", []),
@@ -1700,6 +1729,125 @@ def _compact_analysis(analysis: dict) -> dict:
     }
 
 
+def _compact_graph_context(graph_context: dict) -> dict:
+    if not isinstance(graph_context, dict):
+        return {"entities": [], "relations": [], "paths": []}
+
+    entities = []
+    for entity in _as_list(graph_context.get("entities"))[:24]:
+        if not isinstance(entity, dict) or not entity.get("source_chunk_ids"):
+            continue
+        entities.append(
+            {
+                "entity_id": _as_text(entity.get("entity_id")),
+                "entity_type": _as_text(entity.get("entity_type")),
+                "name": _as_text(entity.get("name")),
+                "description": _short_text(entity.get("description"), 500),
+                "source_chunk_ids": _as_string_list(entity.get("source_chunk_ids"))[:6],
+            }
+        )
+
+    relations = []
+    for relation in _as_list(graph_context.get("relations"))[:40]:
+        if not isinstance(relation, dict) or not relation.get("source_chunk_ids"):
+            continue
+        relations.append(
+            {
+                "relation_id": _as_text(relation.get("relation_id")),
+                "source": _as_text(relation.get("source_name") or relation.get("source")),
+                "relation_type": _as_text(relation.get("relation_type")),
+                "target": _as_text(relation.get("target_name") or relation.get("target")),
+                "description": _short_text(relation.get("description"), 500),
+                "source_chunk_ids": _as_string_list(relation.get("source_chunk_ids"))[:6],
+            }
+        )
+
+    return {
+        "entities": entities,
+        "relations": relations,
+        "paths": _as_list(graph_context.get("paths"))[:5],
+    }
+
+
+def _normalize_graph_alignment(value: object, graph_context: dict, files: list[dict]) -> dict:
+    source = value if isinstance(value, dict) else {}
+    compact_graph = _compact_graph_context(graph_context)
+    module_mapping = [
+        item
+        for item in _as_list(source.get("module_mapping"))
+        if isinstance(item, dict) and _as_text(item.get("entity"))
+    ]
+    if not module_mapping:
+        module_mapping = _infer_graph_module_mapping(compact_graph, files)
+
+    return {
+        "entities_used": _as_string_list(source.get("entities_used"))[:30]
+        or [entity["name"] for entity in compact_graph["entities"] if entity.get("name")][:30],
+        "relations_used": _as_string_list(source.get("relations_used"))[:40]
+        or [
+            f"{relation.get('source', '')} {relation.get('relation_type', '')} {relation.get('target', '')}".strip()
+            for relation in compact_graph["relations"]
+        ][:40],
+        "module_mapping": module_mapping[:30],
+    }
+
+
+def _infer_graph_module_mapping(graph_context: dict, files: list[dict]) -> list[dict]:
+    file_paths = {file_plan.get("path", "") for file_plan in files}
+    mapping = []
+    for entity in graph_context.get("entities", []):
+        entity_type = entity.get("entity_type", "")
+        target = _target_file_for_graph_entity(entity_type, file_paths)
+        if not target:
+            continue
+        mapping.append(
+            {
+                "entity": entity.get("name", ""),
+                "entity_type": entity_type,
+                "target_file": target,
+                "target_symbol": _target_symbol_for_graph_entity(entity_type),
+                "source_chunk_ids": entity.get("source_chunk_ids", []),
+            }
+        )
+    return mapping
+
+
+def _target_file_for_graph_entity(entity_type: str, file_paths: set[str]) -> str:
+    candidates = {
+        "environment": ["src/environment.py", "src/experiment.py"],
+        "state": ["src/environment.py", "src/experiment.py"],
+        "action": ["src/environment.py", "src/experiment.py"],
+        "reward": ["src/environment.py", "src/evaluation.py", "src/experiment.py"],
+        "algorithm": ["src/agent.py", "src/algorithm.py", "src/experiment.py"],
+        "model": ["src/model.py", "src/agent.py", "src/algorithm.py"],
+        "module": ["src/algorithm.py", "src/experiment.py"],
+        "code_module": ["src/experiment.py"],
+        "dataset": ["src/data.py", "src/experiment.py"],
+        "metric": ["src/evaluation.py", "src/experiment.py"],
+        "training_step": ["src/training.py", "src/experiment.py"],
+        "evaluation_protocol": ["src/evaluation.py", "src/experiment.py"],
+    }.get(entity_type, ["src/experiment.py"])
+    for candidate in candidates:
+        if candidate in file_paths:
+            return candidate
+    return ""
+
+
+def _target_symbol_for_graph_entity(entity_type: str) -> str:
+    return {
+        "environment": "Environment",
+        "state": "Environment._get_state",
+        "action": "Environment.step",
+        "reward": "Environment._compute_reward",
+        "algorithm": "Agent",
+        "model": "Model",
+        "dataset": "load_data",
+        "metric": "evaluate",
+        "training_step": "train",
+        "evaluation_protocol": "evaluate",
+    }.get(entity_type, "run_experiment")
+
+
 def _compact_spec(spec: dict) -> dict:
     return {
         "project_name": spec.get("project_name", ""),
@@ -1716,6 +1864,8 @@ def _compact_spec(spec: dict) -> dict:
         "interfaces": spec.get("interfaces", {}),
         "experiment_spec": spec.get("experiment_spec", {}),
         "experiment_contract": spec.get("experiment_contract", {}),
+        "graph_context": spec.get("graph_context", {}),
+        "graph_alignment": spec.get("graph_alignment", {}),
         "expected_outputs": spec.get("expected_outputs", []),
         "assumptions": spec.get("assumptions", [])[:6],
         "missing_details": spec.get("missing_details", [])[:6],

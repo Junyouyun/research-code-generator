@@ -356,6 +356,7 @@ def answer_question_with_chunks(
     conversation_context: list[dict] | None = None,
     project_memory_context: list[dict] | None = None,
     user_memory_context: list[dict] | None = None,
+    graph_context: dict | None = None,
 ) -> dict:
     compact_chunks = [
         {
@@ -368,6 +369,7 @@ def answer_question_with_chunks(
     compact_conversation = _compact_conversation_context(conversation_context or [])
     compact_project_memory = _compact_project_memory_context(project_memory_context or [])
     compact_user_memory = _compact_user_memory_context(user_memory_context or [])
+    compact_graph_context = _compact_graph_context(graph_context or {})
     messages = [
         {
             "role": "system",
@@ -384,9 +386,13 @@ def answer_question_with_chunks(
                 "JSON 字段必须包含：answer, used_chunks, confidence。\n"
                 "used_chunks 是用到的 chunk_id 数组。\n"
                 "confidence 只能是 low、medium、high。\n\n"
+                "graph_context is structured entity/relation evidence extracted from the current paper. "
+                "Use it for relationships, dependencies, algorithm components, experiment structure, and code mapping. "
+                "Do not use graph facts without source_chunk_ids. If graph_context conflicts with chunks, prefer chunks.\n\n"
                 f"conversation_context:\n{json.dumps(compact_conversation, ensure_ascii=False)}\n\n"
                 f"project_memory_context:\n{json.dumps(compact_project_memory, ensure_ascii=False)}\n\n"
                 f"user_memory_context:\n{json.dumps(compact_user_memory, ensure_ascii=False)}\n\n"
+                f"graph_context:\n{json.dumps(compact_graph_context, ensure_ascii=False)}\n\n"
                 f"question: {question}\n\n"
                 f"chunks:\n{json.dumps(compact_chunks, ensure_ascii=False)}"
             ),
@@ -409,6 +415,7 @@ def answer_question_with_expanded_context(
     conversation_context: list[dict] | None = None,
     project_memory_context: list[dict] | None = None,
     user_memory_context: list[dict] | None = None,
+    graph_context: dict | None = None,
 ) -> dict:
     current_context = [
         {
@@ -439,6 +446,7 @@ def answer_question_with_expanded_context(
     compact_conversation = _compact_conversation_context(conversation_context or [])
     compact_project_memory = _compact_project_memory_context(project_memory_context or [])
     compact_user_memory = _compact_user_memory_context(user_memory_context or [])
+    compact_graph_context = _compact_graph_context(graph_context or {})
     messages = [
         {
             "role": "system",
@@ -460,6 +468,8 @@ def answer_question_with_expanded_context(
                 f"conversation_context:\n{json.dumps(compact_conversation, ensure_ascii=False)}\n\n"
                 f"project_memory_context:\n{json.dumps(compact_project_memory, ensure_ascii=False)}\n\n"
                 f"user_memory_context:\n{json.dumps(compact_user_memory, ensure_ascii=False)}\n\n"
+                f"graph_context:\n{json.dumps(compact_graph_context, ensure_ascii=False)}\n\n"
+                "Use graph_context only as structured current-paper evidence. Prefer current_paper_chunks if they conflict.\n\n"
                 f"question: {question}\n\n"
                 f"current_paper_chunks:\n{json.dumps(current_context, ensure_ascii=False)}\n\n"
                 f"related_papers:\n{json.dumps(related_context, ensure_ascii=False)}"
@@ -529,6 +539,45 @@ def _compact_user_memory_context(memories: list[dict]) -> list[dict]:
             }
         )
     return compact_memories
+
+
+def _compact_graph_context(graph_context: dict) -> dict:
+    entities = []
+    for entity in graph_context.get("entities", [])[:8]:
+        source_chunk_ids = _as_string_list(entity.get("source_chunk_ids"))
+        if not source_chunk_ids:
+            continue
+        entities.append(
+            {
+                "entity_id": _as_text(entity.get("entity_id")),
+                "entity_type": _as_text(entity.get("entity_type")),
+                "name": _as_text(entity.get("name")),
+                "description": _as_text(entity.get("description"))[:800],
+                "source_chunk_ids": source_chunk_ids,
+            }
+        )
+
+    relations = []
+    for relation in graph_context.get("relations", [])[:20]:
+        source_chunk_ids = _as_string_list(relation.get("source_chunk_ids"))
+        if not source_chunk_ids:
+            continue
+        relations.append(
+            {
+                "relation_id": _as_text(relation.get("relation_id")),
+                "source": _as_text(relation.get("source_name")),
+                "relation_type": _as_text(relation.get("relation_type")),
+                "target": _as_text(relation.get("target_name")),
+                "description": _as_text(relation.get("description"))[:800],
+                "source_chunk_ids": source_chunk_ids,
+            }
+        )
+
+    return {
+        "entities": entities,
+        "relations": relations,
+        "paths": graph_context.get("paths", [])[:5],
+    }
 
 
 def _summarize_section_units(

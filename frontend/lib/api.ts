@@ -73,6 +73,43 @@ export type CodeFilesResult = {
   files: CodeFile[];
 };
 
+export type GraphEntity = {
+  entity_id: string;
+  entity_type: string;
+  name: string;
+  normalized_name: string;
+  description?: string | null;
+  importance: number;
+  confidence: number;
+  source_chunk_ids: string[];
+  evidence?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type GraphRelation = {
+  relation_id: string;
+  source_entity_id: string;
+  target_entity_id: string;
+  source_name?: string | null;
+  target_name?: string | null;
+  relation_type: string;
+  description?: string | null;
+  confidence: number;
+  source_chunk_ids: string[];
+  evidence?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type ProjectGraphResult = {
+  project_id: string;
+  paper_id?: string | null;
+  paper_version_id?: string | null;
+  entities: GraphEntity[];
+  relations: GraphRelation[];
+};
+
 export type QuestionResult = {
   project_id: string;
   conversation_id?: string | null;
@@ -253,6 +290,10 @@ export async function getReport(projectId: string): Promise<ReportResult> {
 
 export async function getCodeFiles(projectId: string): Promise<CodeFilesResult> {
   return requestJson<CodeFilesResult>(`${API_BASE_URL}/projects/${projectId}/code`);
+}
+
+export async function getProjectGraph(projectId: string): Promise<ProjectGraphResult> {
+  return requestJson<ProjectGraphResult>(`${API_BASE_URL}/projects/${projectId}/graph`);
 }
 
 export async function getProjectConversation(projectId: string): Promise<Conversation> {

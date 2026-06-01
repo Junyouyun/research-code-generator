@@ -36,9 +36,14 @@ EXPERIMENT_TYPE_RULES = [
 ]
 
 
-def build_experiment_spec(analysis: dict, chunks: list[dict] | None = None) -> dict:
+def build_experiment_spec(
+    analysis: dict,
+    chunks: list[dict] | None = None,
+    graph_context: dict | None = None,
+) -> dict:
     """Build a paper-specific experiment definition before code planning."""
     relevant_chunks = _select_experiment_chunks(chunks or [], MAX_EXPERIMENT_SPEC_CHUNKS)
+    compact_graph_context = _compact_graph_context(graph_context or {})
     messages = [
         {
             "role": "system",
@@ -54,16 +59,19 @@ def build_experiment_spec(analysis: dict, chunks: list[dict] | None = None) -> d
                 "code should run, not the final source files.\n"
                 "Required fields: experiment_type, project_type, domain, task, algorithm, environment, "
                 "data, training, evaluation, smoke_validation, evidence_chunks, assumptions, "
-                "missing_details, confidence.\n"
+                "missing_details, graph_alignment, confidence.\n"
                 "project_type must be one of: rl, ml, simulation, optimization, analysis.\n"
                 f"{_experiment_type_prompt_text()}\n"
                 "For RL papers, explicitly extract state, action, reward, transition/dynamics, agent, "
                 "training loop, and minimal smoke run requirements.\n"
+                "Use graph_context to identify state/action/reward, algorithm components, datasets, metrics, "
+                "training steps, and evaluation protocol. Only trust graph facts that have source_chunk_ids.\n"
                 "For missing paper details, put practical defaults in assumptions and missing_details; "
                 "do not invent unsupported claims.\n"
                 "smoke_validation should include episodes, steps_per_episode, must_complete_steps, "
                 "must_use_environment, must_use_agent, and expected_trace_fields.\n\n"
                 f"analysis:\n{json.dumps(_compact_analysis(analysis), ensure_ascii=False)}\n\n"
+                f"graph_context:\n{json.dumps(compact_graph_context, ensure_ascii=False)}\n\n"
                 f"relevant_chunks:\n{json.dumps(relevant_chunks, ensure_ascii=False)}"
             ),
         },
@@ -71,14 +79,18 @@ def build_experiment_spec(analysis: dict, chunks: list[dict] | None = None) -> d
     try:
         raw_spec = _chat_json(messages, max_tokens=3600)
     except Exception:
-        raw_spec = _fallback_experiment_spec(analysis, relevant_chunks)
-    return normalize_experiment_spec(raw_spec, analysis)
+        raw_spec = _fallback_experiment_spec(analysis, relevant_chunks, graph_context)
+    return normalize_experiment_spec(raw_spec, analysis, graph_context)
 
 
-def normalize_experiment_spec(value: object, analysis: dict | None = None) -> dict:
+def normalize_experiment_spec(
+    value: object,
+    analysis: dict | None = None,
+    graph_context: dict | None = None,
+) -> dict:
     spec = value if isinstance(value, dict) else {}
     analysis = analysis or {}
-    fallback = _fallback_experiment_spec(analysis, [])
+    fallback = _fallback_experiment_spec(analysis, [], graph_context)
 
     project_type = _normalize_project_type(spec.get("project_type")) or fallback["project_type"]
     experiment_type = _as_text(spec.get("experiment_type")) or fallback["experiment_type"]
@@ -111,12 +123,17 @@ def normalize_experiment_spec(value: object, analysis: dict | None = None) -> di
         "evidence_chunks": _as_string_list(spec.get("evidence_chunks"))[:12],
         "assumptions": (_as_string_list(spec.get("assumptions")) or fallback["assumptions"])[:12],
         "missing_details": (_as_string_list(spec.get("missing_details")) or fallback["missing_details"])[:12],
+        "graph_alignment": _normalize_graph_alignment(spec.get("graph_alignment"), graph_context),
         "confidence": _normalize_confidence(spec.get("confidence")),
     }
     return normalized
 
 
-def _fallback_experiment_spec(analysis: dict, chunks: list[dict]) -> dict:
+def _fallback_experiment_spec(
+    analysis: dict,
+    chunks: list[dict],
+    graph_context: dict | None = None,
+) -> dict:
     text = json.dumps(_compact_analysis(analysis), ensure_ascii=False).lower()
     chunk_text = json.dumps(chunks, ensure_ascii=False).lower()
     combined = f"{text}\n{chunk_text}"
@@ -170,6 +187,8 @@ def _fallback_experiment_spec(analysis: dict, chunks: list[dict]) -> dict:
             }
         )
 
+    _apply_graph_defaults(graph_context or {}, algorithm, environment, data, training, evaluation)
+
     return {
         "experiment_type": experiment_type,
         "project_type": project_type,
@@ -197,8 +216,110 @@ def _fallback_experiment_spec(analysis: dict, chunks: list[dict]) -> dict:
         "evidence_chunks": [chunk.get("chunk_id", "") for chunk in chunks if chunk.get("chunk_id")][:8],
         "assumptions": ["Use a short smoke run to verify code structure, not full paper-quality results."],
         "missing_details": ["Full dataset paths, complete hyperparameters, and exact benchmark settings may be unavailable."],
+        "graph_alignment": _normalize_graph_alignment({}, graph_context),
         "confidence": "medium",
     }
+
+
+def _apply_graph_defaults(
+    graph_context: dict,
+    algorithm: dict,
+    environment: dict,
+    data: dict,
+    training: dict,
+    evaluation: dict,
+) -> None:
+    entities = graph_context.get("entities") if isinstance(graph_context.get("entities"), list) else []
+    relations = graph_context.get("relations") if isinstance(graph_context.get("relations"), list) else []
+
+    by_type: dict[str, list[dict]] = {}
+    for entity in entities:
+        if not isinstance(entity, dict) or not entity.get("source_chunk_ids"):
+            continue
+        by_type.setdefault(_as_text(entity.get("entity_type")), []).append(entity)
+
+    if by_type.get("algorithm"):
+        algorithm["variant"] = algorithm.get("variant") or by_type["algorithm"][0].get("name", "")
+    if by_type.get("model"):
+        algorithm["model"] = by_type["model"][0].get("name", "")
+    if by_type.get("environment"):
+        environment["entities"] = _entity_names(by_type.get("environment", []))[:5]
+    if by_type.get("state"):
+        environment["state"] = _join_entity_descriptions(by_type["state"])
+    if by_type.get("action"):
+        environment["action"] = _join_entity_descriptions(by_type["action"])
+    if by_type.get("reward"):
+        environment["reward"] = _join_entity_descriptions(by_type["reward"])
+    if by_type.get("dataset"):
+        data["primary"] = data.get("primary") or by_type["dataset"][0].get("name", "")
+    if by_type.get("training_step"):
+        training["loop"] = _join_entity_descriptions(by_type["training_step"])
+    if by_type.get("metric"):
+        evaluation["metrics"] = _entity_names(by_type["metric"])[:8]
+
+    relation_types = {_as_text(relation.get("relation_type")) for relation in relations if isinstance(relation, dict)}
+    if {"defines_state", "defines_action", "defines_reward"} & relation_types:
+        environment["graph_relation_types"] = sorted(relation_types)
+
+
+def _normalize_graph_alignment(value: object, graph_context: dict | None) -> dict:
+    source = value if isinstance(value, dict) else {}
+    compact_graph = _compact_graph_context(graph_context or {})
+    entities = compact_graph.get("entities", [])
+    relations = compact_graph.get("relations", [])
+    return {
+        "entities_used": _as_string_list(source.get("entities_used"))[:20]
+        or [entity.get("name", "") for entity in entities[:20] if entity.get("name")],
+        "relations_used": _as_string_list(source.get("relations_used"))[:30]
+        or [
+            f"{relation.get('source', '')} {relation.get('relation_type', '')} {relation.get('target', '')}".strip()
+            for relation in relations[:30]
+        ],
+    }
+
+
+def _compact_graph_context(graph_context: dict) -> dict:
+    entities = []
+    for entity in _as_list(graph_context.get("entities"))[:24]:
+        if not isinstance(entity, dict) or not entity.get("source_chunk_ids"):
+            continue
+        entities.append(
+            {
+                "entity_id": _as_text(entity.get("entity_id")),
+                "entity_type": _as_text(entity.get("entity_type")),
+                "name": _as_text(entity.get("name")),
+                "description": _short_text(entity.get("description"), 500),
+                "source_chunk_ids": _as_string_list(entity.get("source_chunk_ids"))[:6],
+            }
+        )
+
+    relations = []
+    for relation in _as_list(graph_context.get("relations"))[:40]:
+        if not isinstance(relation, dict) or not relation.get("source_chunk_ids"):
+            continue
+        relations.append(
+            {
+                "source": _as_text(relation.get("source_name")),
+                "relation_type": _as_text(relation.get("relation_type")),
+                "target": _as_text(relation.get("target_name")),
+                "description": _short_text(relation.get("description"), 500),
+                "source_chunk_ids": _as_string_list(relation.get("source_chunk_ids"))[:6],
+            }
+        )
+    return {"entities": entities, "relations": relations}
+
+
+def _entity_names(entities: list[dict]) -> list[str]:
+    return [_as_text(entity.get("name")) for entity in entities if _as_text(entity.get("name"))]
+
+
+def _join_entity_descriptions(entities: list[dict]) -> str:
+    parts = []
+    for entity in entities[:4]:
+        name = _as_text(entity.get("name"))
+        description = _as_text(entity.get("description"))
+        parts.append(f"{name}: {description}" if description else name)
+    return "; ".join(part for part in parts if part)
 
 
 def _chat_json(messages: list[dict], max_tokens: int) -> dict:

@@ -191,7 +191,9 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
             return report
 
         def build_code_plan() -> dict:
-            experiment_spec = build_experiment_spec(analysis, db_chunks)
+            graph_context = _get_code_generation_graph_context(project_id)
+            _write_json(generated_dir / "graph_context.json", graph_context)
+            experiment_spec = build_experiment_spec(analysis, db_chunks, graph_context)
             _write_json(generated_dir / "experiment_spec.json", experiment_spec)
             _record_memory_safely(
                 project_id,
@@ -208,7 +210,7 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
                     "domain": experiment_spec.get("domain", ""),
                 },
             )
-            code_plan = plan_code_project(analysis, db_chunks, experiment_spec)
+            code_plan = plan_code_project(analysis, db_chunks, experiment_spec, graph_context)
             _record_memory_safely(
                 project_id,
                 lambda: record_code_plan_memory(project_id, code_plan),
@@ -305,7 +307,7 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
             ProjectStatus.GENERATING_CODE,
             "生成代码文件",
             88,
-            lambda: generate_code_files(code_plan, code_dir, analysis, db_chunks),
+            lambda: generate_code_files(code_plan, code_dir, analysis, db_chunks, graph_context=code_plan.get("graph_context", {})),
         )
         validation_result = _run_step(
             project_id,
@@ -382,6 +384,26 @@ def _build_knowledge_graph_safely(project_id: str, analysis: dict, chunks: list[
             level="warning",
             details={"kind": "knowledge_graph", "error": str(exc)},
         )
+
+
+def _get_code_generation_graph_context(project_id: str) -> dict:
+    try:
+        project = get_project(project_id)
+        if project is None:
+            return {"entities": [], "relations": [], "paths": []}
+
+        from app.services.knowledge_graph_store import get_code_generation_graph_context
+
+        return get_code_generation_graph_context(project)
+    except Exception as exc:
+        add_project_event(
+            project_id,
+            "knowledge_graph",
+            f"代码生成图谱上下文读取失败：{exc}",
+            level="warning",
+            details={"kind": "knowledge_graph", "stage": "code_generation_context"},
+        )
+        return {"entities": [], "relations": [], "paths": []}
 
 
 def _record_memory_safely(project_id: str, action: Callable[[], None], label: str) -> None:
