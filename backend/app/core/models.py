@@ -199,3 +199,104 @@ class ProjectEvent:
     duration_ms: int | None = None
     details: dict | None = None
     created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class QATrace:
+    trace_id: str
+    user_id: str
+    project_id: str
+    paper_id: str | None
+    paper_version_id: str | None
+    conversation_id: str | None
+    question: str
+    answer: str | None = None
+    rewritten_query: str | None = None
+    question_type: str | None = None
+    retrieved_chunks: list[dict] | None = None
+    retrieval_scores: list[dict] | None = None
+    graph_context: dict | None = None
+    graph_source_chunk_ids: list[str] | None = None
+    project_memory: list[dict] | None = None
+    user_memory: list[dict] | None = None
+    conversation_context: list[dict] | None = None
+    retrieval_trace: dict | None = None
+    final_prompt_hash: str | None = None
+    final_prompt_path: str | None = None
+    context_snapshot_path: str | None = None
+    model_name: str | None = None
+    model_params: dict | None = None
+    latency_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    status: str = "succeeded"
+    error_message: str | None = None
+    created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class CodegenTrace:
+    trace_id: str
+    user_id: str
+    project_id: str
+    paper_id: str | None
+    paper_version_id: str | None
+    trigger_message: str | None = None
+    analysis_snapshot_path: str | None = None
+    retrieved_chunks_path: str | None = None
+    graph_context_path: str | None = None
+    experiment_spec_path: str | None = None
+    code_plan_path: str | None = None
+    generated_files_path: str | None = None
+    validation_command: str | None = None
+    validation_result: dict | None = None
+    validation_error: str | None = None
+    repair_attempts: list[dict] | None = None
+    final_status: str = "succeeded"
+    model_name: str | None = None
+    latency_ms: int | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    created_at: str | None = None
+    finished_at: str | None = None
+
+
+@dataclass(frozen=True)
+class FeedbackItem:
+    feedback_id: str
+    user_id: str
+    project_id: str
+    trace_id: str
+    trace_type: str
+    rating: str | None = None
+    feedback_type: str | None = None
+    comment: str | None = None
+    reviewer_error_type: str | None = None
+    gold_chunk_ids: list[str] | None = None
+    negative_chunk_ids: list[str] | None = None
+    expected_answer_points: list[str] | None = None
+    reviewer_comment: str | None = None
+    status: str = "open"
+    created_at: str | None = None
+    reviewed_at: str | None = None
+
+
+@dataclass(frozen=True)
+class BadCase:
+    bad_case_id: str
+    feedback_id: str
+    user_id: str
+    project_id: str
+    trace_id: str
+    trace_type: str
+    error_type: str
+    severity: str = "medium"
+    question: str | None = None
+    feedback_type: str | None = None
+    gold_chunk_ids: list[str] | None = None
+    negative_chunk_ids: list[str] | None = None
+    expected_answer_points: list[str] | None = None
+    reviewer_comment: str | None = None
+    status: str = "open"
+    created_at: str | None = None
+    updated_at: str | None = None

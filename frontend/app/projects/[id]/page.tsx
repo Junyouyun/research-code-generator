@@ -27,6 +27,7 @@ import {
   ProjectGraphResult,
   ProjectStatus as ProjectStatusData,
   QuestionResult,
+  submitFeedback,
   User,
 } from "../../../lib/api";
 
@@ -356,6 +357,22 @@ export default function ProjectPage() {
     setQaMessages((current) => current.map((item) => (item.id === id ? { ...item, result } : item)));
   }
 
+  async function handleFeedback(
+    result: QuestionResult,
+    feedbackType: string,
+    rating: "up" | "down" | "neutral",
+  ) {
+    if (!result.trace_id) {
+      throw new Error("这条回答没有 trace_id，无法提交反馈。");
+    }
+    await submitFeedback({
+      trace_id: result.trace_id,
+      trace_type: "qa",
+      rating,
+      feedback_type: feedbackType,
+    });
+  }
+
   const shellClassName = [
     "app-shell",
     "with-artifact",
@@ -418,7 +435,12 @@ export default function ProjectPage() {
           />
 
           {qaMessages.map((message) => (
-            <QuestionAnswerMessage question={message.question} result={message.result} key={message.id} />
+            <QuestionAnswerMessage
+              question={message.question}
+              result={message.result}
+              key={message.id}
+              onFeedback={handleFeedback}
+            />
           ))}
         </div>
 
@@ -478,6 +500,7 @@ function messagesToQaMessages(
       project_id: projectId,
       conversation_id: conversationId,
       answer: message.content,
+      trace_id: message.metadata?.trace_id ?? null,
       used_chunks: message.metadata?.used_chunks ?? [],
       confidence: message.metadata?.confidence ?? "low",
       expanded: message.metadata?.expanded ?? false,

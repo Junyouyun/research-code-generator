@@ -26,6 +26,9 @@ from app.services.embedding_client import (
     get_embedding_dimensions,
     get_embedding_model,
 )
+from app.services.keyword_store import search_keyword_chunks
+from app.services.retrieval_query import build_retrieval_queries
+from app.services.retrieval_reranker import rerank_retrieval_hits
 
 VECTOR_STORE_NAME = "qdrant"
 
@@ -92,6 +95,126 @@ def search_within_paper(
         ]
     )
     return _search(query_vector, query_filter, limit=top_k)
+
+
+def search_within_paper_multi_query(
+    paper_version_id: str,
+    question: str,
+    top_k: int = 8,
+    per_query_k: int = 12,
+    user_id: str = "local",
+    max_queries: int = 6,
+) -> dict:
+    query_plan = build_retrieval_queries(question, max_queries=max_queries)
+    queries = query_plan["expanded_queries"]
+    if not queries:
+        raise ValueError("检索问题不能为空。")
+
+    query_vectors = embed_texts(queries)
+    if len(query_vectors) != len(queries):
+        raise RuntimeError("embedding 结果数量和 query 数量不一致。")
+
+    query_filter = Filter(
+        must=[
+            _match("paper_version_id", paper_version_id),
+            _match("user_id", user_id),
+        ]
+    )
+    client = _client()
+    if not _collection_exists(client):
+        return {**query_plan, "hits": [], "query_results": []}
+
+    candidates: dict[str, dict] = {}
+    query_results = []
+    for query, query_vector in zip(queries, query_vectors, strict=True):
+        hits = _search_with_client(client, query_vector, query_filter, limit=per_query_k)
+        query_results.append(
+            {
+                "query": query,
+                "returned_chunk_ids": [hit.get("chunk_id") for hit in hits if hit.get("chunk_id")],
+            }
+        )
+        for rank, hit in enumerate(hits, start=1):
+            chunk_id = hit.get("chunk_id")
+            if not chunk_id:
+                continue
+            candidate = candidates.setdefault(
+                chunk_id,
+                {
+                    **hit,
+                    "source_queries": [],
+                    "source_scores": {},
+                    "query_ranks": {},
+                    "best_vector_score": hit.get("score") or 0.0,
+                },
+            )
+            score = float(hit.get("score") or 0.0)
+            candidate["best_vector_score"] = max(float(candidate.get("best_vector_score") or 0.0), score)
+            candidate["source_scores"][query] = score
+            candidate["query_ranks"][query] = rank
+            if query not in candidate["source_queries"]:
+                candidate["source_queries"].append(query)
+
+    keyword_retrieval = search_keyword_chunks(
+        paper_version_id=paper_version_id,
+        user_id=user_id,
+        queries=queries,
+        per_query_k=per_query_k,
+    )
+    for keyword_hit in keyword_retrieval["hits"]:
+        chunk_id = keyword_hit.get("chunk_id")
+        if not chunk_id:
+            continue
+        candidate = candidates.setdefault(
+            chunk_id,
+            {
+                **keyword_hit,
+                "source_queries": [],
+                "source_scores": {},
+                "query_ranks": {},
+                "best_vector_score": 0.0,
+                "retrieval_sources": [],
+            },
+        )
+        candidate["keyword_score"] = max(
+            float(candidate.get("keyword_score") or 0.0),
+            float(keyword_hit.get("keyword_score") or 0.0),
+        )
+        candidate.setdefault("keyword_source_queries", [])
+        for query in keyword_hit.get("keyword_source_queries", []):
+            if query not in candidate["keyword_source_queries"]:
+                candidate["keyword_source_queries"].append(query)
+        candidate.setdefault("keyword_ranks", {})
+        candidate["keyword_ranks"].update(keyword_hit.get("keyword_ranks", {}))
+        candidate.setdefault("retrieval_sources", [])
+        if "keyword" not in candidate["retrieval_sources"]:
+            candidate["retrieval_sources"].append("keyword")
+
+    merged_hits = []
+    for candidate in candidates.values():
+        candidate.setdefault("retrieval_sources", [])
+        if candidate.get("best_vector_score") and "dense" not in candidate["retrieval_sources"]:
+            candidate["retrieval_sources"].append("dense")
+        candidate["score"] = _hybrid_score(candidate)
+        merged_hits.append(candidate)
+    merged_hits.sort(key=lambda hit: (hit.get("score") or 0.0, hit.get("best_vector_score") or 0.0), reverse=True)
+    rerank_pool = merged_hits[:top_k]
+    reranked_hits = rerank_retrieval_hits(
+        question=question,
+        intent=query_plan.get("intent") or "general",
+        hits=rerank_pool,
+        target_sections=query_plan.get("target_sections", []),
+        top_k=top_k,
+    )
+
+    return {
+        **query_plan,
+        "hits": reranked_hits,
+        "query_results": query_results,
+        "keyword_results": keyword_retrieval["query_results"],
+        "rerank_mode": "lightweight_section_boost",
+        "retrieval_mode": "hybrid_dense_keyword",
+    }
 
 
 def search_related_papers(
@@ -166,6 +289,15 @@ def _search(query_vector: list[float], query_filter: Filter, limit: int) -> list
     if not _collection_exists(client):
         return []
 
+    return _search_with_client(client, query_vector, query_filter, limit)
+
+
+def _search_with_client(
+    client: QdrantClient,
+    query_vector: list[float],
+    query_filter: Filter,
+    limit: int,
+) -> list[dict]:
     if hasattr(client, "query_points"):
         response = client.query_points(
             collection_name=_collection_name(),
@@ -185,6 +317,30 @@ def _search(query_vector: list[float], query_filter: Filter, limit: int) -> list
         )
 
     return [_point_to_hit(point) for point in points]
+
+
+def _multi_query_score(hit: dict) -> float:
+    best_vector_score = float(hit.get("best_vector_score") or 0.0)
+    source_queries = hit.get("source_queries") if isinstance(hit.get("source_queries"), list) else []
+    query_ranks = hit.get("query_ranks") if isinstance(hit.get("query_ranks"), dict) else {}
+    coverage_bonus = min(len(source_queries), 4) * 0.025
+    rank_bonus = 0.0
+    for rank in query_ranks.values():
+        try:
+            rank_bonus += 0.04 / max(int(rank), 1)
+        except (TypeError, ValueError):
+            continue
+    return best_vector_score + coverage_bonus + rank_bonus
+
+
+def _hybrid_score(hit: dict) -> float:
+    dense_score = _multi_query_score(hit)
+    keyword_score = float(hit.get("keyword_score") or 0.0)
+    keyword_queries = hit.get("keyword_source_queries") if isinstance(hit.get("keyword_source_queries"), list) else []
+    keyword_signal = min(keyword_score + len(keyword_queries) * 0.02, 1.0)
+    if float(hit.get("best_vector_score") or 0.0) > 0:
+        return dense_score + keyword_signal * 0.04
+    return 0.45 + keyword_signal * 0.08
 
 
 def _chunk_payload(project_id: str, chunk: dict, embedding_model: str) -> dict:

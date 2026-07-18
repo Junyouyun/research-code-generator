@@ -1458,6 +1458,36 @@ p {
   font-size: 12px;
 }
 
+.feedback-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.feedback-actions button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.feedback-actions button:hover:not(:disabled) {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.feedback-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .memory-shell {
   background: #f8fafc;
 }

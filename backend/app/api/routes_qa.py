@@ -1,3 +1,5 @@
+from time import perf_counter
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.auth import get_current_user
@@ -20,6 +22,7 @@ from app.services.llm_paper_analyzer import (
     answer_question_with_expanded_context,
 )
 from app.services.context_orchestrator import ContextBuildError, build_qa_context
+from app.services.trace_store import new_trace_id, record_qa_trace
 from app.services.user_memory import extract_user_memories_from_turn
 
 router = APIRouter(tags=["qa"])
@@ -39,6 +42,7 @@ def ask_project_question(
     if not project.paper_version_id:
         raise HTTPException(status_code=409, detail="project has no paper_version_id")
 
+    trace_id = new_trace_id("qa")
     conversation = _resolve_project_conversation(
         project_id=project_id,
         user_id=current_user.user_id,
@@ -71,6 +75,7 @@ def ask_project_question(
     retrieval_trace = qa_context["retrieval_trace"]
     expanded = bool(retrieval_trace["expanded"])
 
+    started_at = perf_counter()
     if expanded:
         result = answer_question_with_expanded_context(
             question,
@@ -90,6 +95,18 @@ def ask_project_question(
             user_memory_context=user_memory_context,
             graph_context=graph_context,
         )
+    latency_ms = int((perf_counter() - started_at) * 1000)
+
+    _record_qa_trace_safely(
+        trace_id=trace_id,
+        project=project,
+        user_id=current_user.user_id,
+        conversation_id=conversation.conversation_id,
+        question=question,
+        qa_context=qa_context,
+        answer_result=result,
+        latency_ms=latency_ms,
+    )
 
     save_conversation_message(
         conversation_id=conversation.conversation_id,
@@ -98,6 +115,8 @@ def ask_project_question(
         role="assistant",
         content=result["answer"],
         metadata={
+            "trace_id": trace_id,
+            "trace_type": "qa",
             "confidence": result["confidence"],
             "used_chunks": result["used_chunks"],
             "expanded": expanded,
@@ -125,6 +144,7 @@ def ask_project_question(
     return QuestionResponse(
         project_id=project_id,
         conversation_id=conversation.conversation_id,
+        trace_id=trace_id,
         answer=result["answer"],
         used_chunks=result["used_chunks"],
         confidence=result["confidence"],
@@ -179,6 +199,36 @@ def _resolve_project_conversation(
     if conversation.project_id != project_id:
         raise HTTPException(status_code=403, detail="conversation does not belong to project")
     return conversation
+
+
+def _record_qa_trace_safely(
+    trace_id: str,
+    project,
+    user_id: str,
+    conversation_id: str,
+    question: str,
+    qa_context: dict,
+    answer_result: dict,
+    latency_ms: int,
+) -> None:
+    try:
+        record_qa_trace(
+            trace_id=trace_id,
+            project=project,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            question=question,
+            qa_context=qa_context,
+            answer_result=answer_result,
+            latency_ms=latency_ms,
+        )
+    except Exception as exc:
+        add_project_event(
+            project.project_id,
+            "qa_trace",
+            f"QA trace write skipped: {exc}",
+            level="warning",
+        )
 
 
 def _extract_user_memory_safely(

@@ -1,0 +1,149 @@
+{
+  "cases": [
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_problem_goal",
+      "question_type": "problem_goal",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文主要解决什么问题，优化目标是什么？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_001",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_008"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_why_a3c",
+      "question_type": "method_motivation",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "为什么这篇论文选择 A3C 而不是普通 A2C 或 DQN 类方法？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_006",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_008"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_system_model",
+      "question_type": "system_model",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文的云数据中心资源分配系统模型是什么？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_013",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_014"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_state_space",
+      "question_type": "state_space",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文的 state space 状态空间包含哪些内容？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_022"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_action_space",
+      "question_type": "action_space",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文的 action space 动作空间是什么？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_022",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_023"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_reward_function",
+      "question_type": "reward_function",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文的 reward function 奖励函数怎么定义？包含哪些部分？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_026",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_027",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_031"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_training_process",
+      "question_type": "training_process",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文的 A3C 训练流程是什么？actor、critic 和异步更新是怎么做的？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_034",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_036",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_038",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_050",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_051"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_experiment_setup_dataset",
+      "question_type": "experiment_setup",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文的实验设置和数据集是什么？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_052",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_053"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_baselines",
+      "question_type": "baselines",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文和哪些 baseline 方法进行了比较？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_053",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_054"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    },
+    {
+      "case_type": "retrieval",
+      "case_id": "cloud_a3c_metrics_results",
+      "question_type": "metrics_results",
+      "project_id": "40c98a6b7cec4e96a100d51be38990cf",
+      "paper_version_id": "76beda095bbb47ea91d5da30dad3155b",
+      "question": "这篇论文使用了哪些评价指标，最终实验结果表现如何？",
+      "gold_chunk_ids": [
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_066",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_071",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_079",
+        "doc_40c98a6b7cec4e96a100d51be38990cf_chunk_080"
+      ],
+      "recall_ks": [5, 10],
+      "top_k": 10
+    }
+  ]
+}

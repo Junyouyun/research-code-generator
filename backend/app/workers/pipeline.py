@@ -3,7 +3,7 @@ from pathlib import Path
 from time import perf_counter
 from typing import Callable, TypeVar
 
-from app.config import ARTIFACT_DIR, GENERATED_DIR, PARSED_DIR
+from app.config import ARTIFACT_DIR, GENERATED_DIR, PARSED_DIR, TRACE_DIR
 from app.core.database import (
     add_project_event,
     get_project,
@@ -28,6 +28,7 @@ from app.services.project_memory import (
     record_validation_memory,
 )
 from app.services.report_generator import generate_report
+from app.services.trace_store import generated_files_manifest, new_trace_id, record_codegen_trace
 
 
 T = TypeVar("T")
@@ -42,6 +43,10 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
 
         parsed_dir.mkdir(parents=True, exist_ok=True)
         generated_dir.mkdir(parents=True, exist_ok=True)
+        codegen_trace_id = new_trace_id("codegen")
+        codegen_trace_dir = TRACE_DIR / "codegen" / codegen_trace_id
+        codegen_trace_started_at = perf_counter()
+        codegen_trace_state: dict = {}
 
         add_project_event(project_id, "pipeline", "任务开始")
         _add_thought_event(
@@ -218,6 +223,24 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
             )
             _write_json(generated_dir / "code_spec.json", code_plan)
             _write_json(generated_dir / "code_plan.json", code_plan)
+            codegen_trace_state.update(
+                {
+                    "analysis": analysis,
+                    "chunks": db_chunks,
+                    "graph_context": graph_context,
+                    "experiment_spec": experiment_spec,
+                    "code_plan": code_plan,
+                }
+            )
+            _record_codegen_trace_safely(
+                project_id=project_id,
+                trace_id=codegen_trace_id,
+                trace_dir=codegen_trace_dir,
+                final_status="planned",
+                state=codegen_trace_state,
+                code_dir=code_dir,
+                started_at=codegen_trace_started_at,
+            )
             _add_thought_event(
                 project_id,
                 "planning_code",
@@ -261,6 +284,17 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
                     event_callback=emit_repair_event,
                 )
             except CodeValidationError as exc:
+                _record_codegen_trace_safely(
+                    project_id=project_id,
+                    trace_id=codegen_trace_id,
+                    trace_dir=codegen_trace_dir,
+                    final_status="failed",
+                    state=codegen_trace_state,
+                    code_dir=code_dir,
+                    validation_result=exc.result,
+                    validation_error=exc.result.get("message", "Generated code validation failed"),
+                    started_at=codegen_trace_started_at,
+                )
                 add_project_event(
                     project_id,
                     ProjectStatus.CHECKING_CODE.value,
@@ -326,7 +360,19 @@ def run_project_pipeline(project_id: str, document_path: Path) -> None:
                 "repairs": validation_result.get("repairs", []),
                 "diagnostics": validation_result.get("diagnostics", []),
                 "commands": validation_result.get("commands", []),
+                "trace_id": codegen_trace_id,
             },
+        )
+        _record_codegen_trace_safely(
+            project_id=project_id,
+            trace_id=codegen_trace_id,
+            trace_dir=codegen_trace_dir,
+            final_status="succeeded" if validation_result.get("success") else "failed",
+            state=codegen_trace_state,
+            code_dir=code_dir,
+            validation_result=validation_result,
+            validation_error=None if validation_result.get("success") else validation_result.get("message"),
+            started_at=codegen_trace_started_at,
         )
         _record_memory_safely(
             project_id,
@@ -414,6 +460,45 @@ def _record_memory_safely(project_id: str, action: Callable[[], None], label: st
             project_id,
             "project_memory",
             f"Project memory write skipped during {label}: {exc}",
+            level="warning",
+        )
+
+
+def _record_codegen_trace_safely(
+    project_id: str,
+    trace_id: str,
+    trace_dir: Path,
+    final_status: str,
+    state: dict,
+    code_dir: Path,
+    validation_result: dict | None = None,
+    validation_error: str | None = None,
+    started_at: float | None = None,
+) -> None:
+    try:
+        project = get_project(project_id)
+        if project is None:
+            return
+        record_codegen_trace(
+            trace_id=trace_id,
+            project=project,
+            trace_dir=trace_dir,
+            final_status=final_status,
+            analysis=state.get("analysis", {}),
+            chunks=state.get("chunks", []),
+            graph_context=state.get("graph_context", {}),
+            experiment_spec=state.get("experiment_spec", {}),
+            code_plan=state.get("code_plan", {}),
+            generated_files=generated_files_manifest(code_dir),
+            validation_result=validation_result,
+            validation_error=validation_error,
+            started_at=started_at,
+        )
+    except Exception as exc:
+        add_project_event(
+            project_id,
+            "codegen_trace",
+            f"Codegen trace write skipped: {exc}",
             level="warning",
         )
 

@@ -113,6 +113,7 @@ export type ProjectGraphResult = {
 export type QuestionResult = {
   project_id: string;
   conversation_id?: string | null;
+  trace_id?: string | null;
   answer: string;
   used_chunks: string[];
   confidence: string;
@@ -141,6 +142,8 @@ export type ConversationMessage = {
   content: string;
   content_type: string;
   metadata?: {
+    trace_id?: string;
+    trace_type?: string;
     confidence?: string;
     used_chunks?: string[];
     expanded?: boolean;
@@ -199,6 +202,52 @@ export type UpdateUserMemoryPayload = {
   memory_type?: string;
   importance?: number;
   confidence?: number;
+};
+
+export type FeedbackPayload = {
+  trace_id: string;
+  trace_type: "qa" | "codegen" | "report" | "graph";
+  rating?: "up" | "down" | "neutral";
+  feedback_type?: string;
+  comment?: string;
+};
+
+export type FeedbackResult = {
+  feedback_id: string;
+  project_id: string;
+  trace_id: string;
+  trace_type: string;
+  rating?: string | null;
+  feedback_type?: string | null;
+  comment?: string | null;
+  status: string;
+  created_at?: string | null;
+};
+
+export type BadCase = {
+  bad_case_id: string;
+  feedback_id: string;
+  project_id: string;
+  trace_id: string;
+  trace_type: string;
+  error_type: string;
+  severity: string;
+  question?: string | null;
+  feedback_type?: string | null;
+  gold_chunk_ids: string[];
+  expected_answer_points: string[];
+  reviewer_comment?: string | null;
+  status: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type BadCaseListResult = {
+  items: BadCase[];
+};
+
+export type BadCaseSummaryResult = {
+  items: Record<string, unknown>[];
 };
 
 async function requestJson<T>(url: string, options?: RequestInit): Promise<T> {
@@ -340,6 +389,26 @@ export async function askProjectQuestion(projectId: string, question: string, co
     },
     body: JSON.stringify({ question, conversation_id: conversationId || null }),
   });
+}
+
+export async function submitFeedback(payload: FeedbackPayload): Promise<FeedbackResult> {
+  return requestJson<FeedbackResult>(`${API_BASE_URL}/feedback`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function listBadCases(projectId?: string): Promise<BadCaseListResult> {
+  const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return requestJson<BadCaseListResult>(`${API_BASE_URL}/bad-cases${params}`);
+}
+
+export async function getBadCaseSummary(projectId?: string): Promise<BadCaseSummaryResult> {
+  const params = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return requestJson<BadCaseSummaryResult>(`${API_BASE_URL}/bad-cases/summary${params}`);
 }
 
 export function getArtifactUrl(projectId: string): string {

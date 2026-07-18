@@ -85,6 +85,7 @@ class QuestionRequest(BaseModel):
 class QuestionResponse(BaseModel):
     project_id: str
     conversation_id: str | None = None
+    trace_id: str | None = None
     answer: str
     used_chunks: list[str]
     confidence: str
@@ -255,3 +256,70 @@ class UpdateUserMemoryRequest(BaseModel):
     memory_type: str | None = None
     importance: float | None = Field(default=None, ge=0, le=1)
     confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class FeedbackCreateRequest(BaseModel):
+    trace_id: str
+    trace_type: str = "qa"
+    rating: str | None = None
+    feedback_type: str | None = None
+    comment: str | None = None
+
+
+class FeedbackReviewRequest(BaseModel):
+    reviewer_error_type: str | None = None
+    severity: str = "medium"
+    gold_chunk_ids: list[str] = Field(default_factory=list)
+    negative_chunk_ids: list[str] = Field(default_factory=list)
+    expected_answer_points: list[str] = Field(default_factory=list)
+    reviewer_comment: str | None = None
+    status: str = "reviewed"
+
+
+class FeedbackResponse(BaseModel):
+    feedback_id: str
+    project_id: str
+    trace_id: str
+    trace_type: str
+    rating: str | None = None
+    feedback_type: str | None = None
+    comment: str | None = None
+    reviewer_error_type: str | None = None
+    gold_chunk_ids: list[str] = Field(default_factory=list)
+    negative_chunk_ids: list[str] = Field(default_factory=list)
+    expected_answer_points: list[str] = Field(default_factory=list)
+    reviewer_comment: str | None = None
+    status: str
+    created_at: str | None = None
+    reviewed_at: str | None = None
+
+
+class FeedbackListResponse(BaseModel):
+    items: list[FeedbackResponse] = Field(default_factory=list)
+
+
+class BadCaseResponse(BaseModel):
+    bad_case_id: str
+    feedback_id: str
+    project_id: str
+    trace_id: str
+    trace_type: str
+    error_type: str
+    severity: str
+    question: str | None = None
+    feedback_type: str | None = None
+    gold_chunk_ids: list[str] = Field(default_factory=list)
+    negative_chunk_ids: list[str] = Field(default_factory=list)
+    expected_answer_points: list[str] = Field(default_factory=list)
+    reviewer_comment: str | None = None
+    status: str
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class BadCaseListResponse(BaseModel):
+    items: list[BadCaseResponse] = Field(default_factory=list)
+
+
+class BadCaseSummaryResponse(BaseModel):
+    items: list[dict] = Field(default_factory=list)

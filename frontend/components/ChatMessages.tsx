@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { CodeFile, ProjectEvent, ProjectStatus as ProjectStatusData, QuestionResult } from "../lib/api";
 
@@ -38,6 +38,7 @@ type ProjectAnalysisMessageProps = {
 type QuestionAnswerMessageProps = {
   question: string;
   result: QuestionResult | null;
+  onFeedback?: (result: QuestionResult, feedbackType: string, rating: "up" | "down" | "neutral") => Promise<void>;
 };
 
 type CodeMessageProps = {
@@ -317,9 +318,28 @@ export function ReportMessage({ ready, error, onOpen }: ReportMessageProps) {
   );
 }
 
-export function QuestionAnswerMessage({ question, result }: QuestionAnswerMessageProps) {
+export function QuestionAnswerMessage({ question, result, onFeedback }: QuestionAnswerMessageProps) {
+  const [feedbackStatus, setFeedbackStatus] = useState("");
+  const [isSendingFeedback, setIsSendingFeedback] = useState(false);
+
   if (!question && !result) {
     return null;
+  }
+
+  async function sendFeedback(feedbackType: string, rating: "up" | "down" | "neutral") {
+    if (!result || !onFeedback || !result.trace_id || isSendingFeedback) {
+      return;
+    }
+    setIsSendingFeedback(true);
+    setFeedbackStatus("");
+    try {
+      await onFeedback(result, feedbackType, rating);
+      setFeedbackStatus("已记录反馈");
+    } catch (error) {
+      setFeedbackStatus(error instanceof Error ? error.message : "反馈提交失败");
+    } finally {
+      setIsSendingFeedback(false);
+    }
   }
 
   return (
@@ -342,6 +362,23 @@ export function QuestionAnswerMessage({ question, result }: QuestionAnswerMessag
                 {result.used_chunks.map((chunkId) => (
                   <span key={chunkId}>{chunkId}</span>
                 ))}
+              </div>
+            ) : null}
+            {result.trace_id && onFeedback ? (
+              <div className="feedback-actions">
+                <button type="button" disabled={isSendingFeedback} onClick={() => sendFeedback("accurate", "up")}>
+                  准确
+                </button>
+                <button type="button" disabled={isSendingFeedback} onClick={() => sendFeedback("answer_wrong", "down")}>
+                  不准确
+                </button>
+                <button type="button" disabled={isSendingFeedback} onClick={() => sendFeedback("chunk_wrong", "down")}>
+                  chunk 不准
+                </button>
+                <button type="button" disabled={isSendingFeedback} onClick={() => sendFeedback("too_vague", "down")}>
+                  太模糊
+                </button>
+                {feedbackStatus ? <span>{feedbackStatus}</span> : null}
               </div>
             ) : null}
           </div>

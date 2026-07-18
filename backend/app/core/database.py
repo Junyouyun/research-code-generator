@@ -11,6 +11,9 @@ from app.config import DATABASE_PATH
 from app.core.models import (
     Conversation,
     ConversationMessage,
+    CodegenTrace,
+    BadCase,
+    FeedbackItem,
     GraphEntity,
     GraphExtractionRun,
     GraphRelation,
@@ -18,6 +21,7 @@ from app.core.models import (
     Project,
     ProjectEvent,
     ProjectStatus,
+    QATrace,
     User,
 )
 
@@ -282,6 +286,115 @@ CREATE TABLE IF NOT EXISTS graph_extraction_runs (
 )
 """
 
+QA_TRACES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS qa_traces (
+    trace_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    paper_id TEXT,
+    paper_version_id TEXT,
+    conversation_id TEXT,
+    question TEXT NOT NULL,
+    rewritten_query TEXT,
+    question_type TEXT,
+    retrieved_chunks TEXT,
+    retrieval_scores TEXT,
+    graph_context TEXT,
+    graph_source_chunk_ids TEXT,
+    project_memory TEXT,
+    user_memory TEXT,
+    conversation_context TEXT,
+    retrieval_trace TEXT,
+    final_prompt_hash TEXT,
+    final_prompt_path TEXT,
+    context_snapshot_path TEXT,
+    model_name TEXT,
+    model_params TEXT,
+    answer TEXT,
+    latency_ms INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    status TEXT NOT NULL,
+    error_message TEXT,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+)
+"""
+
+CODEGEN_TRACES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS codegen_traces (
+    trace_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    paper_id TEXT,
+    paper_version_id TEXT,
+    trigger_message TEXT,
+    analysis_snapshot_path TEXT,
+    retrieved_chunks_path TEXT,
+    graph_context_path TEXT,
+    experiment_spec_path TEXT,
+    code_plan_path TEXT,
+    generated_files_path TEXT,
+    validation_command TEXT,
+    validation_result TEXT,
+    validation_error TEXT,
+    repair_attempts TEXT,
+    final_status TEXT NOT NULL,
+    model_name TEXT,
+    latency_ms INTEGER,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+)
+"""
+
+FEEDBACK_ITEMS_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS feedback_items (
+    feedback_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    trace_id TEXT NOT NULL,
+    trace_type TEXT NOT NULL,
+    rating TEXT,
+    feedback_type TEXT,
+    comment TEXT,
+    reviewer_error_type TEXT,
+    gold_chunk_ids TEXT,
+    negative_chunk_ids TEXT,
+    expected_answer_points TEXT,
+    reviewer_comment TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    reviewed_at TEXT,
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+)
+"""
+
+BAD_CASES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS bad_cases (
+    bad_case_id TEXT PRIMARY KEY,
+    feedback_id TEXT NOT NULL UNIQUE,
+    user_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    trace_id TEXT NOT NULL,
+    trace_type TEXT NOT NULL,
+    error_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    question TEXT,
+    feedback_type TEXT,
+    gold_chunk_ids TEXT,
+    negative_chunk_ids TEXT,
+    expected_answer_points TEXT,
+    reviewer_comment TEXT,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (feedback_id) REFERENCES feedback_items (feedback_id),
+    FOREIGN KEY (project_id) REFERENCES projects (project_id)
+)
+"""
+
 
 def _now() -> str:
     # return datetime.utcnow().isoformat(timespec="seconds")
@@ -319,9 +432,14 @@ def init_database() -> None:
         connection.execute(GRAPH_ENTITIES_TABLE_SQL)
         connection.execute(GRAPH_RELATIONS_TABLE_SQL)
         connection.execute(GRAPH_EXTRACTION_RUNS_TABLE_SQL)
+        connection.execute(QA_TRACES_TABLE_SQL)
+        connection.execute(CODEGEN_TRACES_TABLE_SQL)
+        connection.execute(FEEDBACK_ITEMS_TABLE_SQL)
+        connection.execute(BAD_CASES_TABLE_SQL)
         _ensure_projects_identity_columns(connection)
         _ensure_document_chunks_identity_columns(connection)
         _ensure_project_events_details_column(connection)
+        _ensure_feedback_negative_sample_columns(connection)
         _ensure_indexes(connection)
 
 
@@ -661,6 +779,448 @@ def update_conversation_summary(
             """,
             (short_summary, now, now, conversation_id, user_id),
         )
+
+
+def save_qa_trace(trace: QATrace) -> QATrace:
+    init_database()
+    now = trace.created_at or _now()
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO qa_traces (
+                trace_id,
+                user_id,
+                project_id,
+                paper_id,
+                paper_version_id,
+                conversation_id,
+                question,
+                rewritten_query,
+                question_type,
+                retrieved_chunks,
+                retrieval_scores,
+                graph_context,
+                graph_source_chunk_ids,
+                project_memory,
+                user_memory,
+                conversation_context,
+                retrieval_trace,
+                final_prompt_hash,
+                final_prompt_path,
+                context_snapshot_path,
+                model_name,
+                model_params,
+                answer,
+                latency_ms,
+                input_tokens,
+                output_tokens,
+                status,
+                error_message,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trace.trace_id,
+                trace.user_id,
+                trace.project_id,
+                trace.paper_id,
+                trace.paper_version_id,
+                trace.conversation_id,
+                trace.question,
+                trace.rewritten_query,
+                trace.question_type,
+                _json_dumps(trace.retrieved_chunks),
+                _json_dumps(trace.retrieval_scores),
+                _json_dumps(trace.graph_context),
+                _json_dumps(trace.graph_source_chunk_ids),
+                _json_dumps(trace.project_memory),
+                _json_dumps(trace.user_memory),
+                _json_dumps(trace.conversation_context),
+                _json_dumps(trace.retrieval_trace),
+                trace.final_prompt_hash,
+                trace.final_prompt_path,
+                trace.context_snapshot_path,
+                trace.model_name,
+                _json_dumps(trace.model_params),
+                trace.answer,
+                trace.latency_ms,
+                trace.input_tokens,
+                trace.output_tokens,
+                trace.status,
+                trace.error_message,
+                now,
+            ),
+        )
+    return QATrace(**{**trace.__dict__, "created_at": now})
+
+
+def get_qa_trace(trace_id: str, user_id: str | None = None) -> QATrace | None:
+    init_database()
+    sql = "SELECT * FROM qa_traces WHERE trace_id = ?"
+    params: tuple = (trace_id,)
+    if user_id:
+        sql += " AND user_id = ?"
+        params = (trace_id, user_id)
+    with _connect() as connection:
+        row = connection.execute(sql, params).fetchone()
+    return _row_to_qa_trace(row) if row is not None else None
+
+
+def save_codegen_trace(trace: CodegenTrace) -> CodegenTrace:
+    init_database()
+    now = trace.created_at or _now()
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO codegen_traces (
+                trace_id,
+                user_id,
+                project_id,
+                paper_id,
+                paper_version_id,
+                trigger_message,
+                analysis_snapshot_path,
+                retrieved_chunks_path,
+                graph_context_path,
+                experiment_spec_path,
+                code_plan_path,
+                generated_files_path,
+                validation_command,
+                validation_result,
+                validation_error,
+                repair_attempts,
+                final_status,
+                model_name,
+                latency_ms,
+                input_tokens,
+                output_tokens,
+                created_at,
+                finished_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                trace.trace_id,
+                trace.user_id,
+                trace.project_id,
+                trace.paper_id,
+                trace.paper_version_id,
+                trace.trigger_message,
+                trace.analysis_snapshot_path,
+                trace.retrieved_chunks_path,
+                trace.graph_context_path,
+                trace.experiment_spec_path,
+                trace.code_plan_path,
+                trace.generated_files_path,
+                trace.validation_command,
+                _json_dumps(trace.validation_result),
+                trace.validation_error,
+                _json_dumps(trace.repair_attempts),
+                trace.final_status,
+                trace.model_name,
+                trace.latency_ms,
+                trace.input_tokens,
+                trace.output_tokens,
+                now,
+                trace.finished_at,
+            ),
+        )
+    return CodegenTrace(**{**trace.__dict__, "created_at": now})
+
+
+def get_codegen_trace(trace_id: str, user_id: str | None = None) -> CodegenTrace | None:
+    init_database()
+    sql = "SELECT * FROM codegen_traces WHERE trace_id = ?"
+    params: tuple = (trace_id,)
+    if user_id:
+        sql += " AND user_id = ?"
+        params = (trace_id, user_id)
+    with _connect() as connection:
+        row = connection.execute(sql, params).fetchone()
+    return _row_to_codegen_trace(row) if row is not None else None
+
+
+def create_feedback_item(
+    user_id: str,
+    project_id: str,
+    trace_id: str,
+    trace_type: str,
+    rating: str | None = None,
+    feedback_type: str | None = None,
+    comment: str | None = None,
+) -> FeedbackItem:
+    init_database()
+    now = _now()
+    feedback = FeedbackItem(
+        feedback_id=uuid4().hex,
+        user_id=user_id,
+        project_id=project_id,
+        trace_id=trace_id,
+        trace_type=trace_type,
+        rating=rating,
+        feedback_type=feedback_type,
+        comment=comment,
+        status="open",
+        created_at=now,
+    )
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO feedback_items (
+                feedback_id,
+                user_id,
+                project_id,
+                trace_id,
+                trace_type,
+                rating,
+                feedback_type,
+                comment,
+                status,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                feedback.feedback_id,
+                feedback.user_id,
+                feedback.project_id,
+                feedback.trace_id,
+                feedback.trace_type,
+                feedback.rating,
+                feedback.feedback_type,
+                feedback.comment,
+                feedback.status,
+                feedback.created_at,
+            ),
+        )
+    return feedback
+
+
+def list_feedback_items(user_id: str, project_id: str | None = None, limit: int = 100) -> list[FeedbackItem]:
+    init_database()
+    if project_id:
+        sql = """
+            SELECT *
+            FROM feedback_items
+            WHERE user_id = ? AND project_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        params = (user_id, project_id, limit)
+    else:
+        sql = """
+            SELECT *
+            FROM feedback_items
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+        """
+        params = (user_id, limit)
+    with _connect() as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [_row_to_feedback_item(row) for row in rows]
+
+
+def get_feedback_item(feedback_id: str, user_id: str | None = None) -> FeedbackItem | None:
+    init_database()
+    sql = "SELECT * FROM feedback_items WHERE feedback_id = ?"
+    params: tuple = (feedback_id,)
+    if user_id:
+        sql += " AND user_id = ?"
+        params = (feedback_id, user_id)
+    with _connect() as connection:
+        row = connection.execute(sql, params).fetchone()
+    return _row_to_feedback_item(row) if row is not None else None
+
+
+def update_feedback_review(
+    feedback_id: str,
+    user_id: str,
+    reviewer_error_type: str | None = None,
+    gold_chunk_ids: list[str] | None = None,
+    negative_chunk_ids: list[str] | None = None,
+    expected_answer_points: list[str] | None = None,
+    reviewer_comment: str | None = None,
+    status: str = "reviewed",
+) -> FeedbackItem | None:
+    init_database()
+    reviewed_at = _now()
+    with _connect() as connection:
+        connection.execute(
+            """
+            UPDATE feedback_items
+            SET reviewer_error_type = ?,
+                gold_chunk_ids = ?,
+                negative_chunk_ids = ?,
+                expected_answer_points = ?,
+                reviewer_comment = ?,
+                status = ?,
+                reviewed_at = ?
+            WHERE feedback_id = ?
+              AND user_id = ?
+            """,
+            (
+                reviewer_error_type,
+                _json_dumps(gold_chunk_ids),
+                _json_dumps(negative_chunk_ids),
+                _json_dumps(expected_answer_points),
+                reviewer_comment,
+                status,
+                reviewed_at,
+                feedback_id,
+                user_id,
+            ),
+        )
+    return get_feedback_item(feedback_id, user_id)
+
+
+def upsert_bad_case_from_feedback(
+    feedback: FeedbackItem,
+    error_type: str,
+    question: str | None = None,
+    severity: str = "medium",
+    gold_chunk_ids: list[str] | None = None,
+    negative_chunk_ids: list[str] | None = None,
+    expected_answer_points: list[str] | None = None,
+    reviewer_comment: str | None = None,
+    status: str = "open",
+) -> BadCase:
+    init_database()
+    now = _now()
+    existing = get_bad_case_by_feedback(feedback.feedback_id, feedback.user_id)
+    bad_case_id = existing.bad_case_id if existing else uuid4().hex
+    created_at = existing.created_at if existing and existing.created_at else now
+    with _connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO bad_cases (
+                bad_case_id,
+                feedback_id,
+                user_id,
+                project_id,
+                trace_id,
+                trace_type,
+                error_type,
+                severity,
+                question,
+                feedback_type,
+                gold_chunk_ids,
+                negative_chunk_ids,
+                expected_answer_points,
+                reviewer_comment,
+                status,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(feedback_id) DO UPDATE SET
+                error_type = excluded.error_type,
+                severity = excluded.severity,
+                question = excluded.question,
+                feedback_type = excluded.feedback_type,
+                gold_chunk_ids = excluded.gold_chunk_ids,
+                negative_chunk_ids = excluded.negative_chunk_ids,
+                expected_answer_points = excluded.expected_answer_points,
+                reviewer_comment = excluded.reviewer_comment,
+                status = excluded.status,
+                updated_at = excluded.updated_at
+            """,
+            (
+                bad_case_id,
+                feedback.feedback_id,
+                feedback.user_id,
+                feedback.project_id,
+                feedback.trace_id,
+                feedback.trace_type,
+                error_type,
+                severity,
+                question,
+                feedback.feedback_type,
+                _json_dumps(gold_chunk_ids),
+                _json_dumps(negative_chunk_ids),
+                _json_dumps(expected_answer_points),
+                reviewer_comment,
+                status,
+                created_at,
+                now,
+            ),
+        )
+    bad_case = get_bad_case_by_feedback(feedback.feedback_id, feedback.user_id)
+    if bad_case is None:
+        raise RuntimeError("bad case upsert failed")
+    return bad_case
+
+
+def get_bad_case_by_feedback(feedback_id: str, user_id: str | None = None) -> BadCase | None:
+    init_database()
+    sql = "SELECT * FROM bad_cases WHERE feedback_id = ?"
+    params: tuple = (feedback_id,)
+    if user_id:
+        sql += " AND user_id = ?"
+        params = (feedback_id, user_id)
+    with _connect() as connection:
+        row = connection.execute(sql, params).fetchone()
+    return _row_to_bad_case(row) if row is not None else None
+
+
+def list_bad_cases(
+    user_id: str,
+    project_id: str | None = None,
+    status: str | None = None,
+    error_type: str | None = None,
+    limit: int = 100,
+) -> list[BadCase]:
+    init_database()
+    clauses = ["user_id = ?"]
+    params: list[object] = [user_id]
+    if project_id:
+        clauses.append("project_id = ?")
+        params.append(project_id)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    if error_type:
+        clauses.append("error_type = ?")
+        params.append(error_type)
+    params.append(limit)
+    with _connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM bad_cases
+            WHERE {" AND ".join(clauses)}
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        ).fetchall()
+    return [_row_to_bad_case(row) for row in rows]
+
+
+def summarize_bad_cases(user_id: str, project_id: str | None = None) -> list[dict]:
+    init_database()
+    if project_id:
+        sql = """
+            SELECT error_type, status, COUNT(*) AS count
+            FROM bad_cases
+            WHERE user_id = ? AND project_id = ?
+            GROUP BY error_type, status
+            ORDER BY count DESC
+        """
+        params = (user_id, project_id)
+    else:
+        sql = """
+            SELECT error_type, status, COUNT(*) AS count
+            FROM bad_cases
+            WHERE user_id = ?
+            GROUP BY error_type, status
+            ORDER BY count DESC
+        """
+        params = (user_id,)
+    with _connect() as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [dict(row) for row in rows]
 
 
 def upsert_project_memory(
@@ -1771,6 +2331,41 @@ def list_document_chunks_by_ids(project_id: str, chunk_ids: list[str]) -> list[d
     return [chunks_by_id[chunk_id] for chunk_id in chunk_ids if chunk_id in chunks_by_id]
 
 
+def list_neighbor_document_chunks(
+    project_id: str,
+    order_indices: list[int],
+    window: int = 1,
+    limit: int = 8,
+) -> list[dict]:
+    create_chunks_table()
+    valid_indices = sorted({int(index) for index in order_indices if index is not None})
+    if not valid_indices:
+        return []
+
+    window = max(int(window), 0)
+    limit = max(int(limit), 1)
+    conditions = []
+    params: list[object] = [project_id]
+    for order_index in valid_indices:
+        conditions.append("order_index BETWEEN ? AND ?")
+        params.extend([order_index - window, order_index + window])
+
+    with _connect() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT *
+            FROM document_chunks
+            WHERE project_id = ?
+              AND ({" OR ".join(conditions)})
+            ORDER BY order_index ASC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+
+    return [_row_to_chunk(row) for row in rows]
+
+
 def delete_document_chunks(project_id: str) -> None:
     create_chunks_table()
     with _connect() as connection:
@@ -2073,6 +2668,111 @@ def _row_to_conversation_message(row: sqlite3.Row) -> ConversationMessage:
     )
 
 
+def _row_to_qa_trace(row: sqlite3.Row) -> QATrace:
+    return QATrace(
+        trace_id=row["trace_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        paper_id=row["paper_id"],
+        paper_version_id=row["paper_version_id"],
+        conversation_id=row["conversation_id"],
+        question=row["question"],
+        answer=row["answer"],
+        rewritten_query=row["rewritten_query"],
+        question_type=row["question_type"],
+        retrieved_chunks=_decode_json(row["retrieved_chunks"], []),
+        retrieval_scores=_decode_json(row["retrieval_scores"], []),
+        graph_context=_decode_json(row["graph_context"], {}),
+        graph_source_chunk_ids=_decode_json(row["graph_source_chunk_ids"], []),
+        project_memory=_decode_json(row["project_memory"], []),
+        user_memory=_decode_json(row["user_memory"], []),
+        conversation_context=_decode_json(row["conversation_context"], []),
+        retrieval_trace=_decode_json(row["retrieval_trace"], {}),
+        final_prompt_hash=row["final_prompt_hash"],
+        final_prompt_path=row["final_prompt_path"],
+        context_snapshot_path=row["context_snapshot_path"],
+        model_name=row["model_name"],
+        model_params=_decode_json(row["model_params"], {}),
+        latency_ms=row["latency_ms"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
+        status=row["status"],
+        error_message=row["error_message"],
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_codegen_trace(row: sqlite3.Row) -> CodegenTrace:
+    return CodegenTrace(
+        trace_id=row["trace_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        paper_id=row["paper_id"],
+        paper_version_id=row["paper_version_id"],
+        trigger_message=row["trigger_message"],
+        analysis_snapshot_path=row["analysis_snapshot_path"],
+        retrieved_chunks_path=row["retrieved_chunks_path"],
+        graph_context_path=row["graph_context_path"],
+        experiment_spec_path=row["experiment_spec_path"],
+        code_plan_path=row["code_plan_path"],
+        generated_files_path=row["generated_files_path"],
+        validation_command=row["validation_command"],
+        validation_result=_decode_json(row["validation_result"], {}),
+        validation_error=row["validation_error"],
+        repair_attempts=_decode_json(row["repair_attempts"], []),
+        final_status=row["final_status"],
+        model_name=row["model_name"],
+        latency_ms=row["latency_ms"],
+        input_tokens=row["input_tokens"],
+        output_tokens=row["output_tokens"],
+        created_at=row["created_at"],
+        finished_at=row["finished_at"],
+    )
+
+
+def _row_to_feedback_item(row: sqlite3.Row) -> FeedbackItem:
+    return FeedbackItem(
+        feedback_id=row["feedback_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        trace_id=row["trace_id"],
+        trace_type=row["trace_type"],
+        rating=row["rating"],
+        feedback_type=row["feedback_type"],
+        comment=row["comment"],
+        reviewer_error_type=row["reviewer_error_type"],
+        gold_chunk_ids=_decode_json(row["gold_chunk_ids"], []),
+        negative_chunk_ids=_decode_json(row["negative_chunk_ids"], []),
+        expected_answer_points=_decode_json(row["expected_answer_points"], []),
+        reviewer_comment=row["reviewer_comment"],
+        status=row["status"],
+        created_at=row["created_at"],
+        reviewed_at=row["reviewed_at"],
+    )
+
+
+def _row_to_bad_case(row: sqlite3.Row) -> BadCase:
+    return BadCase(
+        bad_case_id=row["bad_case_id"],
+        feedback_id=row["feedback_id"],
+        user_id=row["user_id"],
+        project_id=row["project_id"],
+        trace_id=row["trace_id"],
+        trace_type=row["trace_type"],
+        error_type=row["error_type"],
+        severity=row["severity"],
+        question=row["question"],
+        feedback_type=row["feedback_type"],
+        gold_chunk_ids=_decode_json(row["gold_chunk_ids"], []),
+        negative_chunk_ids=_decode_json(row["negative_chunk_ids"], []),
+        expected_answer_points=_decode_json(row["expected_answer_points"], []),
+        reviewer_comment=row["reviewer_comment"],
+        status=row["status"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 def _row_to_memory_item(row: sqlite3.Row) -> MemoryItem:
     return MemoryItem(
         memory_id=row["memory_id"],
@@ -2142,6 +2842,12 @@ def _ensure_document_chunks_identity_columns(connection: sqlite3.Connection) -> 
 
 def _ensure_project_events_details_column(connection: sqlite3.Connection) -> None:
     _ensure_columns(connection, "project_events", {"details": "TEXT"})
+
+
+def _ensure_feedback_negative_sample_columns(connection: sqlite3.Connection) -> None:
+    columns = {"negative_chunk_ids": "TEXT"}
+    _ensure_columns(connection, "feedback_items", columns)
+    _ensure_columns(connection, "bad_cases", columns)
 
 
 def _ensure_columns(
@@ -2229,6 +2935,27 @@ def _ensure_indexes(connection: sqlite3.Connection) -> None:
     connection.execute(
         "CREATE INDEX IF NOT EXISTS idx_graph_runs_project ON graph_extraction_runs (user_id, project_id, created_at)"
     )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_qa_traces_project ON qa_traces (user_id, project_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_qa_traces_conversation ON qa_traces (conversation_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_codegen_traces_project ON codegen_traces (user_id, project_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_feedback_items_trace ON feedback_items (trace_type, trace_id)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_feedback_items_project ON feedback_items (user_id, project_id, created_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bad_cases_project ON bad_cases (user_id, project_id, status, updated_at)"
+    )
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_bad_cases_error_type ON bad_cases (user_id, error_type, status)"
+    )
 
 
 def _decode_details(value: str | None) -> dict | None:
@@ -2241,6 +2968,21 @@ def _decode_details(value: str | None) -> dict | None:
         return None
 
     return decoded if isinstance(decoded, dict) else None
+
+
+def _decode_json(value: str | None, default=None):
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return default
+
+
+def _json_dumps(value: object) -> str | None:
+    if value is None:
+        return None
+    return json.dumps(value, ensure_ascii=False)
 
 
 def _decode_string_list(value: str | None) -> list[str]:

@@ -15,6 +15,8 @@ PARSED_DIR = DATA_DIR / "parsed"
 GENERATED_DIR = DATA_DIR / "generated"
 ARTIFACT_DIR = DATA_DIR / "artifacts"
 VALIDATION_DIR = DATA_DIR / "validation_runs"
+TRACE_DIR = DATA_DIR / "traces"
+EVAL_REPORT_DIR = DATA_DIR / "eval_reports"
 DATABASE_PATH = DATA_DIR / "db.sqlite3"
 QDRANT_PATH = DATA_DIR / "qdrant"
 
